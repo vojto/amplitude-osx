@@ -16,6 +16,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#import <BugSense-iOS/BugSenseController.h>
+
 #import "Mixpanel.h"
 
 #import "AppDelegate.h"
@@ -40,7 +42,8 @@
     self.window = [[[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]] autorelease];
     
     // Override point for customization after application launch.
-    
+    [BugSenseController sharedControllerWithBugSenseAPIKey:@"adb1f5ad"];
+
     // Initialize the MixpanelAPI object
     self.mixpanel = [Mixpanel sharedInstanceWithToken:MIXPANEL_TOKEN];
 
