@@ -86,4 +86,9 @@
     [mixpanel identify:mixpanel.distinctId];
 }
 
+- (IBAction)takeSurvey:(id)sender
+{
+    [[Mixpanel sharedInstance].people ask];
+}
+
 @end

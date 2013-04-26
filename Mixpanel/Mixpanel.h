@@ -583,6 +583,14 @@
  */
 - (void)deleteUser;
 
+/*!
+ @method
+
+ @abstract
+ Ask the user some questions.
+ */
+- (void)ask;
+
 @end
 
 /*!
@@ -612,5 +620,11 @@
  @param mixpanel        Mixpanel API instance
  */
 - (BOOL)mixpanelWillFlush:(Mixpanel *)mixpanel;
+
+@end
+
+@interface MixpanelSurveyViewController : UIViewController
+
+- (void)initWithQuestions:(NSArray *)questions;
 
 @end
