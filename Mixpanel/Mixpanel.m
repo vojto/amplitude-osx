@@ -1198,48 +1198,6 @@ static Mixpanel *sharedInstance = nil;
     }
 }
 
-- (void)ask:(NSArray *)questions
-{
-    self.questions = questions;
-    UIAlertView *alertView = [[UIAlertView alloc] initWithTitle:@"Give Feedback"
-                                                        message:@"We're trying to make this app better for you. Would you mind taking a brief survey? It won't take more than a minute. Thanks for your support!"
-                                                       delegate:self
-                                              cancelButtonTitle:@"No, Thanks"
-                                              otherButtonTitles:@"Take Survey", @"Maybe Later", nil];
-	[alertView show];
-}
-
-- (void)showSurveyInView:(UIView *)view
-{
-    UIViewController *questionController = [[UIViewController alloc] init];
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:questionController];
-    [NSApplication.sharedApplication.mainWindow presentModalViewController:navController animated:YES];
-    [navController release];
-    [surveyController release];
-
-    - (void)viewDidLoad
-    {
-        [super viewDidLoad];
-        self.yesButton = [[UIButton alloc] ini
-                          initWithFrame:
-                          CGRectMake(10.0f, 30.0f,
-                                     300.0f, 30.0f)];
-
-        //changes the border style so the text field appears on screen
-        self.textField.borderStyle = UITextBorderStyleRoundedRect;
-
-
-        [self.view addSubview:self.yesButton];
-        [self.view addSubview:self.noButton];
-        [self.view addSubview:self.maybeButton];
-    }
-    MixpanelSurveyViewController *surveyController = [[MixpanelSurveyViewController alloc] init];
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:surveyController];
-    [self presentModalViewController:navController animated:YES];
-    [navController release];
-    [surveyController release];
-}
-
 - (NSString *)description
 {
     return [NSString stringWithFormat:@"<MixpanelPeople: %p %@>", self, self.mixpanel.apiToken];
@@ -1253,23 +1211,74 @@ static Mixpanel *sharedInstance = nil;
     [super dealloc];
 }
 
-#pragma mark - UIAlertViewDelegate
+#pragma mark - Surveys
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
 {
     switch (buttonIndex) {
         case 0:
-            NSLog(@"clicked first button");
+            // no thanks
             break;
         case 1:
-            NSLog(@"clicked second button");
+            // yes
+            [self showSurvey];
             break;
         case 2:
-            NSLog(@"clicked third button");
+            // maybe later
             break;
         default:
+            NSLog(@"%@ error got unknown button index from survey alert: %d", self, buttonIndex);
             break;
     }
 }
+
+- (void)ask
+{
+    UIAlertView *alertView = [[UIAlertView alloc] initWithTitle:@"Help Us Improve"
+                                                        message:@"We're trying to make this app better for you. Would you mind taking a brief survey? It won't take more than a minute. Thanks for your support!"
+                                                       delegate:self
+                                              cancelButtonTitle:@"No, Thanks"
+                                              otherButtonTitles:@"Take Survey", @"Maybe Later", nil];
+	[alertView show];
+}
+
+- (void)showSurvey
+{
+    if ([self.mixpanel.delegate respondsToSelector:@selector(mixpanel:didReceivePermissionToConductSurvey:)]) {
+        UIViewController *questionController = [[UIViewController alloc] init];
+        
+        UINavigationController *surveyController = [[UINavigationController alloc] initWithRootViewController:questionController];
+        [self.mixpanel.delegate mixpanel:self.mixpanel didReceivePermissionToConductSurvey:surveyController];
+        [questionController release];
+        [surveyController release];
+    }
+}
+
+//- (void)showSurveyInView:(UIView *)view
+//{
+//
+//    - (void)viewDidLoad
+//    {
+//        [super viewDidLoad];
+//        self.yesButton = [[UIButton alloc] ini
+//                          initWithFrame:
+//                          CGRectMake(10.0f, 30.0f,
+//                                     300.0f, 30.0f)];
+//
+//        //changes the border style so the text field appears on screen
+//        self.textField.borderStyle = UITextBorderStyleRoundedRect;
+//
+//
+//        [self.view addSubview:self.yesButton];
+//        [self.view addSubview:self.noButton];
+//        [self.view addSubview:self.maybeButton];
+//    }
+//    MixpanelSurveyViewController *surveyController = [[MixpanelSurveyViewController alloc] init];
+//    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:surveyController];
+//    [self presentModalViewController:navController animated:YES];
+//    [navController release];
+//    [surveyController release];
+//}
+
 
 @end

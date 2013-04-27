@@ -20,7 +20,9 @@
 #import <UIKit/UIKit.h>
 
 @class    MixpanelPeople;
+//@class    MixpanelSurveyNavigationController;
 @protocol MixpanelDelegate;
+//@protocol MixpanelSurveyNavigationController;
 
 /*!
  @class
@@ -621,10 +623,14 @@
  */
 - (BOOL)mixpanelWillFlush:(Mixpanel *)mixpanel;
 
-@end
-
-@interface MixpanelSurveyViewController : UIViewController
-
-- (void)initWithQuestions:(NSArray *)questions;
+- (void)mixpanel:(Mixpanel *)mixpanel didReceivePermissionToConductSurvey:(UINavigationController *)surveyNav;
 
 @end
+
+//@protocol MixpanelSurveyDelegate <NSObject>
+//@required
+//
+//- (BOOL)mixpanelSurveyDidReceivePermission:(MixpanelSurveyNavigationController *)surveyNav;
+//- (BOOL)mixpanelSurveyDidComplete:(MixpanelSurveyNavigationController *)surveyNav;
+//
+//@end

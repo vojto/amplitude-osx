@@ -44,6 +44,8 @@
     // Initialize the MixpanelAPI object
     self.mixpanel = [Mixpanel sharedInstanceWithToken:MIXPANEL_TOKEN];
 
+    self.mixpanel.delegate = self;
+
     // Set the upload interval to 20 seconds for demonstration purposes. This would be overkill for most applications.
     self.mixpanel.flushInterval = 20; // defaults to 60 seconds
 
@@ -132,6 +134,13 @@
 
     NSLog(@"%@ dispatched background task %u", self, self.bgTask);
 
+}
+
+#pragma mark * Surveys
+
+- (void)mixpanel:(Mixpanel *)mixpanel didReceivePermissionToConductSurvey:(UINavigationController *)surveyNav
+{
+    [self.viewController presentModalViewController:surveyNav animated:YES];
 }
 
 @end
