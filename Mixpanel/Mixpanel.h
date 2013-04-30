@@ -625,6 +625,8 @@
 
 - (void)mixpanel:(Mixpanel *)mixpanel didReceivePermissionToConductSurvey:(UINavigationController *)surveyNav;
 
+- (void)mixpanelDidCancelSurvey:(Mixpanel *)mixpanel;
+
 @end
 
 //@protocol MixpanelSurveyDelegate <NSObject>

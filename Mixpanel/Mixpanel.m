@@ -85,6 +85,13 @@
 
 @end
 
+@interface MixpanelSurveyNavigationController : UINavigationController
+@property(nonatomic,retain) NSArray *questionViewControllers;
+@property(nonatomic,retain) UILabel *progressLabel;
+@property(nonatomic,retain) UIProgressView *progressBar;
+- (instancetype)initWithQuestionViewControllers:(NSArray *)questionViewControllers;
+@end
+
 @implementation Mixpanel
 
 static Mixpanel *sharedInstance = nil;
@@ -1242,43 +1249,129 @@ static Mixpanel *sharedInstance = nil;
 	[alertView show];
 }
 
+
 - (void)showSurvey
 {
     if ([self.mixpanel.delegate respondsToSelector:@selector(mixpanel:didReceivePermissionToConductSurvey:)]) {
-        UIViewController *questionController = [[UIViewController alloc] init];
-        
-        UINavigationController *surveyController = [[UINavigationController alloc] initWithRootViewController:questionController];
+
+        UIViewController *questionController1 = [[UIViewController alloc] init];
+        questionController1.view.backgroundColor = [UIColor whiteColor];
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10.0f, 30.0f, 300.0f, 30.0f)];
+        label.text = @"Question 1";
+        [questionController1.view addSubview:label];
+        [label release];
+
+        UIViewController *questionController2 = [[UIViewController alloc] init];
+        questionController2.view.backgroundColor = [UIColor whiteColor];
+        label = [[UILabel alloc] initWithFrame:CGRectMake(10.0f, 30.0f, 300.0f, 30.0f)];
+        label.text = @"Question 2";
+        [questionController2.view addSubview:label];
+        [label release];
+
+        NSArray *questionViewControllers = [NSArray arrayWithObjects:questionController1, questionController2, nil];
+
+        MixpanelSurveyNavigationController *surveyController = [[MixpanelSurveyNavigationController alloc] initWithQuestionViewControllers:questionViewControllers];
         [self.mixpanel.delegate mixpanel:self.mixpanel didReceivePermissionToConductSurvey:surveyController];
-        [questionController release];
+
+        [questionController1 release];
+        [questionController2 release];
         [surveyController release];
     }
 }
 
-//- (void)showSurveyInView:(UIView *)view
-//{
-//
-//    - (void)viewDidLoad
-//    {
-//        [super viewDidLoad];
-//        self.yesButton = [[UIButton alloc] ini
-//                          initWithFrame:
-//                          CGRectMake(10.0f, 30.0f,
-//                                     300.0f, 30.0f)];
-//
-//        //changes the border style so the text field appears on screen
-//        self.textField.borderStyle = UITextBorderStyleRoundedRect;
-//
-//
-//        [self.view addSubview:self.yesButton];
-//        [self.view addSubview:self.noButton];
-//        [self.view addSubview:self.maybeButton];
-//    }
-//    MixpanelSurveyViewController *surveyController = [[MixpanelSurveyViewController alloc] init];
-//    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:surveyController];
-//    [self presentModalViewController:navController animated:YES];
-//    [navController release];
-//    [surveyController release];
-//}
+- (void)cancelSurvey
+{
+    if ([self.mixpanel.delegate respondsToSelector:@selector(mixpanelDidCancelSurvey:)]) {
+        [self.mixpanel.delegate mixpanelDidCancelSurvey:self.mixpanel];
+    }
+}
 
+@end
+
+@implementation MixpanelSurveyNavigationController
+
+- (instancetype)initWithQuestionViewControllers:(NSArray *)questionViewControllers
+{
+    if (self = [super initWithRootViewController:[questionViewControllers objectAtIndex:0]]) {
+        self.questionViewControllers = questionViewControllers;
+        [self initQuestionViewControllers];
+        [self initToolbar];
+    }
+    return self;
+}
+
+- (void)initQuestionViewControllers
+{
+    BOOL first = YES;
+    for (UIViewController *controller in self.questionViewControllers) {
+        if (first) {
+            controller.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(dismiss)];
+            first = NO;
+        }
+        if (controller == self.questionViewControllers.lastObject) {
+            controller.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(dismiss)];
+        } else {
+            controller.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Skip" style:UIBarButtonItemStylePlain target:self action:@selector(next)];
+        }
+    }
+}
+
+- (void)initToolbar
+{
+    self.toolbarHidden = NO;
+
+    UILabel *label = [[UILabel alloc] init];
+    label.textColor = [UIColor whiteColor];
+    label.font = [UIFont boldSystemFontOfSize:13.0];
+    label.shadowColor = [UIColor darkGrayColor];
+    label.shadowOffset = CGSizeMake(0.0, -1.0);
+    label.backgroundColor = [UIColor clearColor];
+    label.textAlignment = UITextAlignmentCenter;
+    label.frame = CGRectMake(0.0, 0.0, 150.0, 16.0);
+    label.textAlignment = UITextAlignmentCenter;
+    self.progressLabel = label;
+    [label release];
+
+
+    UIProgressView *progressBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
+    progressBar.frame = CGRectMake(0.0, 21.0, 150.0, 11.0);
+    self.progressBar = progressBar;
+    [progressBar release];
+
+    UIView *progressContainer = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 150.0, 32.0)];
+    [progressContainer addSubview:self.progressLabel];
+    [progressContainer addSubview:self.progressBar];
+
+    [self.toolbar addSubview:progressContainer];
+    [progressContainer release];
+
+    [self updateProgress];
+}
+
+- (void)dismiss
+{
+    [self.presentingViewController dismissModalViewControllerAnimated:YES];
+}
+
+- (UIViewController *)popViewControllerAnimated:(BOOL)animated
+{
+    UIViewController *controller = [super popViewControllerAnimated:animated];
+    [self updateProgress];
+    return controller;
+}
+
+- (void)next
+{
+    UIViewController *next = [self.questionViewControllers objectAtIndex:self.viewControllers.count];
+    [self pushViewController:next animated:YES];
+    [self updateProgress];
+}
+
+- (void)updateProgress
+{
+    NSString *label = [NSString stringWithFormat:@"Question %d of %d", self.viewControllers.count, self.questionViewControllers.count];
+    self.progressLabel.text = label;
+    self.progressBar.progress = ((float)self.viewControllers.count) / self.questionViewControllers.count;
+}
 
 @end
