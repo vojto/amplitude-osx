@@ -1295,7 +1295,7 @@ static Mixpanel *sharedInstance = nil;
         self.mixpanel = mixpanel;
         self.questionViewControllers = questionViewControllers;
         [self initQuestionViewControllers];
-        [self initProgressBar];
+        [self initNavigationBar];
     }
     return self;
 }
@@ -1324,31 +1324,42 @@ static Mixpanel *sharedInstance = nil;
     }
 }
 
-- (void)initProgressBar
+- (void)initNavigationBar
 {
-    self.progressLabel = [[[UILabel alloc] initWithFrame:CGRectMake(0.0, 0.0, 150.0, 16.0)] autorelease];
+    self.progressLabel = [[[UILabel alloc] initWithFrame:CGRectMake(0.0, 0.0, 150.0, 18.0)] autorelease];
     self.progressLabel.textColor = [UIColor whiteColor];
     self.progressLabel.font = [UIFont boldSystemFontOfSize:13.0];
     self.progressLabel.shadowColor = [UIColor darkGrayColor];
     self.progressLabel.shadowOffset = CGSizeMake(0.0, -1.0);
     self.progressLabel.backgroundColor = [UIColor clearColor];
     self.progressLabel.textAlignment = UITextAlignmentCenter;
-    self.progressLabel.backgroundColor = [UIColor yellowColor];
 
     self.progressView = [[[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar] autorelease];
-    self.progressView.frame = CGRectMake(0.0, 16.0, 150.0, 11.0);
-    self.progressView.backgroundColor = [UIColor greenColor];
 
-    UIView *container = [[[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 150.0, 32.0)] autorelease];
-    container.backgroundColor = [UIColor redColor];
-    [container addSubview:self.progressLabel];
-    [container addSubview:self.progressView];
-    container.center = CGPointMake((self.navigationBar.bounds.origin.x + self.navigationBar.bounds.size.width) / 2, (self.navigationBar.bounds.origin.x + self.navigationBar.bounds.size.width) / 2);
-    container.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleLeftMargin;
-    [self.navigationBar addSubview:container];
+    [self.navigationBar addSubview:self.progressLabel];
+    [self.navigationBar addSubview:self.progressView];
+
+    [self positionProgressLabelAndView:self.interfaceOrientation];
 
     [self updateProgress];
+}
 
+- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration
+{
+    [super willAnimateRotationToInterfaceOrientation:toInterfaceOrientation duration:duration];
+    [self positionProgressLabelAndView:toInterfaceOrientation];
+}
+
+- (void)positionProgressLabelAndView:(UIInterfaceOrientation)interfaceOrientation
+{
+    CGFloat centerX = self.navigationBar.center.x;
+    if (interfaceOrientation == UIInterfaceOrientationPortrait || interfaceOrientation == UIInterfaceOrientationPortraitUpsideDown) {
+        self.progressLabel.center = CGPointMake(centerX, 14.0);
+        self.progressView.center = CGPointMake(centerX, 28.0);
+    } else {
+        self.progressLabel.center = CGPointMake(centerX, 9.0);
+        self.progressView.center = CGPointMake(centerX, 23.0);
+    }
 }
 
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated
