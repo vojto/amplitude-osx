@@ -623,16 +623,8 @@
  */
 - (BOOL)mixpanelWillFlush:(Mixpanel *)mixpanel;
 
-- (void)mixpanel:(Mixpanel *)mixpanel didReceivePermissionToConductSurvey:(UINavigationController *)surveyNav;
+- (void)mixpanel:(Mixpanel *)mixpanel didReceivePermissionToConductSurvey:(UINavigationController *)surveyNavigationController;
 
-- (void)mixpanelDidCancelSurvey:(Mixpanel *)mixpanel;
+- (void)mixpanelDidDismissSurvey:(Mixpanel *)mixpanel;
 
 @end
-
-//@protocol MixpanelSurveyDelegate <NSObject>
-//@required
-//
-//- (BOOL)mixpanelSurveyDidReceivePermission:(MixpanelSurveyNavigationController *)surveyNav;
-//- (BOOL)mixpanelSurveyDidComplete:(MixpanelSurveyNavigationController *)surveyNav;
-//
-//@end

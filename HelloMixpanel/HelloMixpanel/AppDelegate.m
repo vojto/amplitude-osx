@@ -143,7 +143,7 @@
     [self.viewController presentModalViewController:surveyNav animated:YES];
 }
 
-- (void)mixpanelDidCancelSurvey:(Mixpanel *)mixpanel
+- (void)mixpanelDidDismissSurvey:(Mixpanel *)mixpanel
 {
     [self.viewController dismissModalViewControllerAnimated:YES];
 }
