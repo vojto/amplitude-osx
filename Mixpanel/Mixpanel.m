@@ -88,6 +88,8 @@
 
 @interface MixpanelSurveyQuestionViewController : UIViewController
 @property(nonatomic,assign) id<MixpanelSurveyQuestionViewControllerDelegate> delegate;
+@property(nonatomic,retain) NSDictionary *question;
+-(instancetype)initWithQuestionDictionary:(NSDictionary *)question;
 @end
 
 @interface MixpanelSurveyNavigationController : UINavigationController <MixpanelSurveyQuestionViewControllerDelegate>
@@ -1260,29 +1262,89 @@ static Mixpanel *sharedInstance = nil;
 {
     if ([self.mixpanel.delegate respondsToSelector:@selector(mixpanel:didReceivePermissionToConductSurvey:)]) {
 
-        UIViewController *questionController1 = [[UIViewController alloc] init];
-        questionController1.view.backgroundColor = [UIColor whiteColor];
-        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10.0f, 30.0f, 300.0f, 30.0f)];
-        label.text = @"Question 1";
-        [questionController1.view addSubview:label];
-        [label release];
-
-        UIViewController *questionController2 = [[UIViewController alloc] init];
-        questionController2.view.backgroundColor = [UIColor whiteColor];
-        label = [[UILabel alloc] initWithFrame:CGRectMake(10.0f, 30.0f, 300.0f, 30.0f)];
-        label.text = @"Question 2";
-        [questionController2.view addSubview:label];
-        [label release];
-
-        NSArray *questionViewControllers = [NSArray arrayWithObjects:questionController1, questionController2, nil];
-
+        NSArray *questions = @[
+                               @{@"$question": @"Would you recommend this app to a friend?", @"$type": @"$boolean"},
+                               @{@"$question": @"What would you like ship most?"},
+                               @{@"$question": @"If you'd like a solutions architect to give you a call, please enter your phone number.", @"$type": @"$number"}
+                               ];
+        NSMutableArray *questionViewControllers = [NSMutableArray array];
+        for (NSDictionary *question in questions) {
+            MixpanelSurveyQuestionViewController *controller = [[[MixpanelSurveyQuestionViewController alloc] initWithQuestionDictionary:question] autorelease];
+            ;
+            [questionViewControllers addObject:controller];
+        }
         MixpanelSurveyNavigationController *surveyController = [[MixpanelSurveyNavigationController alloc] initWithMixpanel:self.mixpanel andQuestionViewControllers:questionViewControllers];
         [self.mixpanel.delegate mixpanel:self.mixpanel didReceivePermissionToConductSurvey:surveyController];
-
-        [questionController1 release];
-        [questionController2 release];
         [surveyController release];
     }
+}
+
+@end
+
+@implementation MixpanelSurveyQuestionViewController
+
+-(instancetype)initWithQuestionDictionary:(NSDictionary *)question
+{
+    if (self = [super init]) {
+        self.question = question;
+        self.view.backgroundColor = [UIColor whiteColor];
+        [self initQuestionLabel];
+        NSString *type = [question objectForKey:@"$type"];
+        if ([type isEqualToString:@"$boolean"]) {
+            [self initBoolean];
+        } else if ([type isEqualToString:@"$number"]) {
+            [self initNumber];
+        } else {
+            [self initString];
+        }
+    }
+    return self;
+}
+- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration
+{
+    
+}
+- (void)initQuestionLabel
+{
+    UILabel *label = [[[UILabel alloc] initWithFrame:CGRectMake(10.0, 10.0, self.view.bounds.size.width - 20.0, 100.0)] autorelease];
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    label.textColor = [UIColor darkGrayColor];
+    label.font = [UIFont boldSystemFontOfSize:20.0];
+    label.textAlignment = UITextAlignmentCenter;
+    label.text = [self.question objectForKey:@"$question"];
+    label.lineBreakMode = UILineBreakModeWordWrap;
+    label.adjustsFontSizeToFitWidth = YES;
+    label.numberOfLines = 5;
+    [self.view addSubview:label];
+}
+
+- (void)initBoolean
+{
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 220.0, 40.0)];
+    container.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleLeftMargin;
+    UIButton *yes = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+    [yes setTitle:@"Yes" forState:UIControlStateNormal];
+    yes.frame = CGRectMake(0.0, 0.0, 100.0, 40.0);
+    UIButton *no = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+    [no setTitle:@"No" forState:UIControlStateNormal];
+    no.frame = CGRectMake(120.0, 0.0, 100.0, 40.0);
+    [container addSubview:yes];
+    [container addSubview:no];
+    container.center = CGPointMake(self.view.bounds.size.width / 2, 170.0);
+    [self.view addSubview:container];
+}
+
+- (void)initNumber
+{
+    NSLog(@"1");
+    UITextField *field = [[[UITextField alloc] initWithFrame:CGRectMake(0.0, 220.0, 200.0, 40.0)] autorelease];
+    field.borderStyle = UITextBorderStyleRoundedRect;
+    [self.view addSubview:field];
+}
+
+- (void)initString
+{
+
 }
 
 @end
@@ -1310,7 +1372,10 @@ static Mixpanel *sharedInstance = nil;
 
 - (void)initQuestionViewControllers
 {
-    for (UIViewController *controller in self.questionViewControllers) {
+    for (MixpanelSurveyQuestionViewController *controller in self.questionViewControllers) {
+
+        controller.delegate = self;
+
         if (controller == [self.questionViewControllers objectAtIndex:0]) {
             controller.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(dismiss)];
         }
