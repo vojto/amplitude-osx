@@ -1,38 +1,11 @@
-# Using Mixpanel Analytics on iOS #
-If you want to track user behavior on your iPhone\iPad application, first
-download the Mixpanel iOS API by cloning the git repository:
+# Using Mixpanel Analytics on OS X #
 
-	git clone http://github.com/mixpanel/mixpanel-iphone.git
+`pod "Mixpanel-OSX-Community"`
 
-Or download [the latest zip
-archive](https://github.com/mixpanel/mixpanel-iphone/zipball/master) and
-extract the files. The respository has three folders:
+This is an unnoficial port of the Mixpanel API to Cocoa, its built with cocoapods in mind.
+You can install this manually, the only framework you'll need is SystemConfiguration I think.
 
-1. Mixpanel - The Mixpanel iOS library and its dependencies.
-2. HelloMixpanel - A sample application that tracks events and sets user
-properties using Mixpanel.
-4. Docs - Headerdoc API reference.
-
-# Setup #
-Adding Mixpanel to your Xcode project is as easy as:
-
-1. Drag and drop the Mixpanel folder into your project. 
-2. Check the "Copy items into destination Group's folder" and select
-Recursively create groups for any added folders.
-
-![Copy][copy]
-
-3. Make sure the following Apple frameworks have been added to your project in Targets > Build Phases > Link Binary With Libraries:
-
-- Foundation.framework
-- UIKit.framework
-- SystemConfiguration.framework
-- CoreTelephony.framework
-- AdSupport.framework
-
-And that's it. 
-
-![Project][project]
+Ideally I'll keep this up to date in order to keep [ARAnalytics](https://github.com/orta/ARAnalytics/) relevant. As I use Mixpanel personally. If you work at Mixpanel and would like to take over, that'd be super-ace.
 
 # Initializing Mixpanel #
 The first thing you need to do is initialize Mixpanel with your project token.
