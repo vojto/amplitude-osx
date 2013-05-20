@@ -2,7 +2,7 @@
 
 `pod "Mixpanel-OSX-Community", :git => "https://github.com/orta/mixpanel-osx-unofficial.git"`
 
-This is an unnoficial port of the Mixpanel API to Cocoa, its built with cocoapods in mind.
+This is an unofficial port of the Mixpanel API to Cocoa, its built with cocoapods in mind.
 You can install this manually, the only framework you'll need is SystemConfiguration I think.
 
 Ideally I'll keep this up to date in order to keep [ARAnalytics](https://github.com/orta/ARAnalytics/) relevant. As I use Mixpanel personally. If you work at Mixpanel and would like to take over, that'd be super-ace. Thanks.
