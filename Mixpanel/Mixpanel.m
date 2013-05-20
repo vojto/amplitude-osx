@@ -22,10 +22,13 @@
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
 #import <AdSupport/ASIdentifierManager.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <CoreTelephony/CTCarrier.h>
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
+#endif
+
 #import <SystemConfiguration/SystemConfiguration.h>
 
 #import "MPCJSONDataSerializer.h"
@@ -95,6 +98,7 @@ static Mixpanel *sharedInstance = nil;
 {
     NSMutableDictionary *properties = [NSMutableDictionary dictionary];
 
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
     UIDevice *device = [UIDevice currentDevice];
 
     [properties setValue:@"iphone" forKey:@"mp_lib"];
@@ -126,6 +130,27 @@ static Mixpanel *sharedInstance = nil;
     if (NSClassFromString(@"ASIdentifierManager")) {
         [properties setValue:ASIdentifierManager.sharedManager.advertisingIdentifier.UUIDString forKey:@"$ios_ifa"];
     }
+
+#else
+    [properties setValue:@"osx" forKey:@"mp_lib"];
+    
+    SInt32 versionMajor=0, versionMinor=0, versionBugFix=0;
+    Gestalt(gestaltSystemVersionMajor, &versionMajor);
+    Gestalt(gestaltSystemVersionMinor, &versionMinor);
+    Gestalt(gestaltSystemVersionBugFix, &versionBugFix);
+    NSString *version = [NSString stringWithFormat:@"%d.%d.%d", versionMajor, versionMinor, versionBugFix];
+
+    [properties setValue:@"OS X" forKey:@"$os"];
+    [properties setValue:version forKey:@"$os_version"];
+    [properties setValue:[Mixpanel deviceModel] forKey:@"$model"];
+    [properties setValue:[Mixpanel deviceModel] forKey:@"mp_device_model"]; // legacy
+
+    CGRect screenRect = [NSScreen mainScreen].frame;
+    [properties setValue:[NSNumber numberWithInt:(int)screenRect.size.width] forKey:@"$screen_height"];
+    [properties setValue:[NSNumber numberWithInt:(int)screenRect.size.height] forKey:@"$screen_width"];
+
+#endif
+    
 
     return [NSDictionary dictionaryWithDictionary:properties];
 }
@@ -165,11 +190,12 @@ static Mixpanel *sharedInstance = nil;
         return NO;
     }
 
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
     if ((flags & kSCNetworkReachabilityFlagsIsWWAN) == kSCNetworkReachabilityFlagsIsWWAN) {
         // only a cellular network connection is available.
         return NO;
     }
-
+#endif
     return YES;
 }
 
@@ -367,9 +393,11 @@ static Mixpanel *sharedInstance = nil;
 - (NSString *)defaultDistinctId
 {
     NSString *distinctId = nil;
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
     if (NSClassFromString(@"ASIdentifierManager")) {
         distinctId = ASIdentifierManager.sharedManager.advertisingIdentifier.UUIDString;
     }
+#endif
     if (!distinctId) {
         distinctId = ODIN1();
     }
@@ -548,11 +576,12 @@ static Mixpanel *sharedInstance = nil;
     // If the app is currently in the background but Mixpanel has not requested
     // to run a background task, the flush will be cut short. This can happen
     // when the app forces a flush from within its own background task.
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
     if ([Mixpanel inBackground] && self.taskId == UIBackgroundTaskInvalid) {
         [self flushInBackgroundTask];
         return;
     }
-
+#endif
     @synchronized(self) {
         if ([self.delegate respondsToSelector:@selector(mixpanelWillFlush:)]) {
             if (![self.delegate mixpanelWillFlush:self]) {
@@ -657,10 +686,12 @@ static Mixpanel *sharedInstance = nil;
 
 - (void)updateNetworkActivityIndicator
 {
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
     @synchronized(self) {
         BOOL visible = self.showNetworkActivityIndicator && (self.eventsConnection || self.peopleConnection);
         [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:visible];
     }
+#endif
 }
 
 #pragma mark * Persistence
@@ -805,18 +836,29 @@ static Mixpanel *sharedInstance = nil;
 {
     MixpanelDebug(@"%@ adding application observers", self);
     NSNotificationCenter *notificationCenter = [NSNotificationCenter defaultCenter];
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
+    NSString *termination = UIApplicationWillTerminateNotification;
+    NSString *inactive = UIApplicationWillResignActiveNotification;
+    NSString *active = UIApplicationDidBecomeActiveNotification;
+#else
+    NSString *termination = NSApplicationWillTerminateNotification;
+    NSString *inactive = NSApplicationWillResignActiveNotification;
+    NSString *active = NSApplicationDidBecomeActiveNotification;
+#endif
+
     [notificationCenter addObserver:self
                            selector:@selector(applicationWillTerminate:)
-                               name:UIApplicationWillTerminateNotification
+                               name:termination
                              object:nil];
     [notificationCenter addObserver:self
                            selector:@selector(applicationWillResignActive:)
-                               name:UIApplicationWillResignActiveNotification
+                               name:inactive
                              object:nil];
     [notificationCenter addObserver:self
                            selector:@selector(applicationDidBecomeActive:)
-                               name:UIApplicationDidBecomeActiveNotification
+                               name:active
                              object:nil];
+
 #if __IPHONE_OS_VERSION_MIN_REQUIRED >= 40000
     if ([[UIDevice currentDevice] respondsToSelector:@selector(isMultitaskingSupported)] && &UIBackgroundTaskInvalid) {
         self.taskId = UIBackgroundTaskInvalid;
@@ -1047,6 +1089,8 @@ static Mixpanel *sharedInstance = nil;
 
 + (NSDictionary *)deviceInfoProperties
 {
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
+
     UIDevice *device = [UIDevice currentDevice];
     NSMutableDictionary *properties = [NSMutableDictionary dictionary];
     [properties setValue:[Mixpanel deviceModel] forKey:@"$ios_device_model"];
@@ -1056,6 +1100,12 @@ static Mixpanel *sharedInstance = nil;
     if (NSClassFromString(@"ASIdentifierManager")) {
         [properties setValue:ASIdentifierManager.sharedManager.advertisingIdentifier.UUIDString forKey:@"$ios_ifa"];
     }
+#else
+    NSMutableDictionary *properties = [NSMutableDictionary dictionary];
+    [properties setValue:[Mixpanel deviceModel] forKey:@"$ios_device_model"];
+    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"] forKey:@"$ios_app_version"];
+    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] forKey:@"$ios_app_release"];
+#endif
     return [NSDictionary dictionaryWithDictionary:properties];
 }
 
