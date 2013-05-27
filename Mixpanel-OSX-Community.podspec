@@ -5,7 +5,7 @@ Pod::Spec.new do |s|
   s.summary      =  'OS X tracking library for Mixpanel Analytics.'
   s.homepage     =  'http://mixpanel.com'
   s.author       =  { 'Mixpanel' => 'support@mixpanel.com', "orta" => "orta.therox@gmail.com" }
-  s.source       =  { :git => 'https://github.com/orta/mixpanel-osx-unofficial', :tag => 'v2.0.0' }
+  s.source       =  { :git => 'https://github.com/orta/mixpanel-osx-unofficial.git', :tag => 'v2.0.0' }
   s.frameworks   =  'SystemConfiguration'
   s.platform     =  :osx
   s.source_files =  'Mixpanel/**/*.{h,m}'
