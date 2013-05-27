@@ -698,9 +698,17 @@ static Mixpanel *sharedInstance = nil;
 
 - (NSString *)filePathForData:(NSString *)data
 {
+#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
     NSString *filename = [NSString stringWithFormat:@"mixpanel-%@-%@.plist", self.apiToken, data];
     return [[NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES) lastObject]
             stringByAppendingPathComponent:filename];
+#else 
+    NSString *filename = [NSString stringWithFormat:@"mixpanel-%@-%@.plist", self.apiToken, data];
+    return [[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) lastObject]
+            stringByAppendingPathComponent:filename];
+
+
+#endif
 }
 
 - (NSString *)eventsFilePath
