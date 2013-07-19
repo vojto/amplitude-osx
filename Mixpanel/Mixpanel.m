@@ -350,6 +350,7 @@ static Mixpanel *sharedInstance = nil;
         self.apiToken = apiToken;
         self.flushInterval = flushInterval;
         self.flushOnBackground = YES;
+        self.flushOnInactive = YES;
         self.showNetworkActivityIndicator = YES;
         self.serverURL = @"https://api.mixpanel.com";
         
@@ -903,8 +904,12 @@ static Mixpanel *sharedInstance = nil;
 - (void)applicationWillResignActive:(NSNotification *)notification
 {
     MixpanelDebug(@"%@ application will resign active", self);
-    @synchronized(self) {
+    if (self.flushOnInactive) {
+      MixpanelDebug(@"Keep on flushing even though the application won't be active.");
+    } else {
+      @synchronized(self) {
         [self stopFlushTimer];
+      }
     }
 }
 
