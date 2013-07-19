@@ -129,6 +129,18 @@
  @property
 
  @abstract
+ Control whether the library should keep on flushing data to Mixpanel when the app
+ isn't active anymore.
+
+ @discussion
+ Defaults to NO. This can be useful if your app does things while being "inactive".
+ */
+@property(nonatomic,assign) BOOL flushOnInactive;
+
+/*!
+ @property
+
+ @abstract
  Controls whether to show spinning network activity indicator when flushing
  data to the Mixpanel servers.
 
