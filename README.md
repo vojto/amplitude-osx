@@ -53,9 +53,10 @@ tokens as follows.
     }
 
 # ARC #
-The Mixpanel library does not currently use ARC. We've chosen to do this
-because a large number of customers have not moved to ARC yet. To integrate
-with an ARC project: Go to Project > Target > Build Phases, double-click on
+The Mixpanel library supports ARC as of v2.1.0.
+
+For versions before v2.1.0:
+To integrate with an ARC project: Go to Project > Target > Build Phases, double-click on
 each Mixpanel file and add the flag: `-fno-objc-arc`.
 
 # Logging #

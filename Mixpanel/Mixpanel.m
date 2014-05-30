@@ -1,46 +1,26 @@
-//
-// Mixpanel.m
-// Mixpanel
-//
-// Copyright 2012 Mixpanel
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+#if ! __has_feature(objc_arc)
+#error This file must be compiled with ARC. Either turn on ARC for the project or use -fobjc-arc flag on this file.
+#endif
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-#import <AdSupport/ASIdentifierManager.h>
+#import <CommonCrypto/CommonHMAC.h>
 #import <CommonCrypto/CommonDigest.h>
-#import <CoreTelephony/CTCarrier.h>
-#import <CoreTelephony/CTTelephonyNetworkInfo.h>
-#endif
-
 #import <SystemConfiguration/SystemConfiguration.h>
 
-#import "MPCJSONDataSerializer.h"
 #import "Mixpanel.h"
 #import "NSData+MPBase64.h"
-#import "ODIN.h"
-
-#define VERSION @"2.0.0"
 
 #ifndef IFT_ETHER
 #define IFT_ETHER 0x6 // ethernet CSMACD
 #endif
+
+#define VERSION @"2.3.6"
 
 #ifdef MIXPANEL_LOG
 #define MixpanelLog(...) NSLog(__VA_ARGS__)
@@ -54,174 +34,306 @@
 #define MixpanelDebug(...)
 #endif
 
-@interface Mixpanel ()
+@interface Mixpanel () {
+    NSUInteger _flushInterval;
+}
 
 // re-declare internally as readwrite
-@property(nonatomic,retain) MixpanelPeople *people;
-@property(nonatomic,copy) NSString *distinctId;
+@property (atomic, strong) MixpanelPeople *people;
+@property (atomic, copy) NSString *distinctId;
 
-@property(nonatomic,copy)   NSString *apiToken;
-@property(nonatomic,retain) NSMutableDictionary *superProperties;
-@property(nonatomic,retain) NSTimer *timer;
-@property(nonatomic,retain) NSMutableArray *eventsQueue;
-@property(nonatomic,retain) NSMutableArray *peopleQueue;
-@property(nonatomic,retain) NSArray *eventsBatch;
-@property(nonatomic,retain) NSArray *peopleBatch;
-@property(nonatomic,retain) NSURLConnection *eventsConnection;
-@property(nonatomic,retain) NSURLConnection *peopleConnection;
-@property(nonatomic,retain) NSMutableData *eventsResponseData;
-@property(nonatomic,retain) NSMutableData *peopleResponseData;
+@property (nonatomic, copy) NSString *apiToken;
+@property (atomic, strong) NSDictionary *superProperties;
+@property (atomic, strong) NSDictionary *automaticProperties;
+@property (nonatomic, strong) NSTimer *timer;
+@property (nonatomic, strong) NSMutableArray *eventsQueue;
+@property (nonatomic, strong) NSMutableArray *peopleQueue;
+@property dispatch_queue_t serialQueue;
+@property (nonatomic, assign) SCNetworkReachabilityRef reachability;
+@property (nonatomic, strong) NSDateFormatter *dateFormatter;
 
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= 40000
-@property(nonatomic,assign) UIBackgroundTaskIdentifier taskId;
-#endif
 
 @end
 
 @interface MixpanelPeople ()
 
-@property(nonatomic,assign) Mixpanel *mixpanel;
-@property(nonatomic,retain) NSMutableArray *unidentifiedQueue;
-@property(nonatomic,copy) NSString *distinctId;
+@property (nonatomic, weak) Mixpanel *mixpanel;
+@property (nonatomic, strong) NSMutableArray *unidentifiedQueue;
+@property (nonatomic, copy) NSString *distinctId;
+@property (nonatomic, strong) NSDictionary *automaticPeopleProperties;
 
 - (id)initWithMixpanel:(Mixpanel *)mixpanel;
 
 @end
 
+static NSString *MPURLEncode(NSString *s)
+{
+    return (NSString *)CFBridgingRelease(CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, (__bridge CFStringRef)s, NULL, CFSTR("!*'();:@&=+$,/?%#[]"), kCFStringEncodingUTF8));
+}
+
 @implementation Mixpanel
+
+static void MixpanelReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info)
+{
+    if (info != NULL && [(__bridge NSObject*)info isKindOfClass:[Mixpanel class]]) {
+        @autoreleasepool {
+            Mixpanel *mixpanel = (__bridge Mixpanel *)info;
+            [mixpanel reachabilityChanged:flags];
+        }
+    } else {
+        NSLog(@"Mixpanel reachability callback received unexpected info object");
+    }
+}
 
 static Mixpanel *sharedInstance = nil;
 
-#pragma mark * Device info
-
-+ (NSDictionary *)deviceInfoProperties
++ (Mixpanel *)sharedInstanceWithToken:(NSString *)apiToken
 {
-    NSMutableDictionary *properties = [NSMutableDictionary dictionary];
-
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-    UIDevice *device = [UIDevice currentDevice];
-
-    [properties setValue:@"iphone" forKey:@"mp_lib"];
-    [properties setValue:VERSION forKey:@"$lib_version"];
-
-    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"] forKey:@"$app_version"];
-    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] forKey:@"$app_release"];
-
-    [properties setValue:@"Apple" forKey:@"$manufacturer"];
-    [properties setValue:[device systemName] forKey:@"$os"];
-    [properties setValue:[device systemVersion] forKey:@"$os_version"];
-    [properties setValue:[Mixpanel deviceModel] forKey:@"$model"];
-    [properties setValue:[Mixpanel deviceModel] forKey:@"mp_device_model"]; // legacy
-
-    CGSize size = [UIScreen mainScreen].bounds.size;
-    [properties setValue:[NSNumber numberWithInt:(int)size.height] forKey:@"$screen_height"];
-    [properties setValue:[NSNumber numberWithInt:(int)size.width] forKey:@"$screen_width"];
-
-    [properties setValue:[NSNumber numberWithBool:[Mixpanel wifiAvailable]] forKey:@"$wifi"];
-
-    CTTelephonyNetworkInfo *networkInfo = [[CTTelephonyNetworkInfo alloc] init];
-    CTCarrier *carrier = [networkInfo subscriberCellularProvider];
-    [networkInfo release];
-
-    if (carrier.carrierName.length) {
-        [properties setValue:carrier.carrierName forKey:@"$carrier"];
-    }
-
-    if (NSClassFromString(@"ASIdentifierManager")) {
-        [properties setValue:ASIdentifierManager.sharedManager.advertisingIdentifier.UUIDString forKey:@"$ios_ifa"];
-    }
-
-#else
-    [properties setValue:@"osx" forKey:@"mp_lib"];
-    
-    SInt32 versionMajor=0, versionMinor=0, versionBugFix=0;
-    Gestalt(gestaltSystemVersionMajor, &versionMajor);
-    Gestalt(gestaltSystemVersionMinor, &versionMinor);
-    Gestalt(gestaltSystemVersionBugFix, &versionBugFix);
-    NSString *version = [NSString stringWithFormat:@"%d.%d.%d", versionMajor, versionMinor, versionBugFix];
-
-    [properties setValue:@"OS X" forKey:@"$os"];
-    [properties setValue:version forKey:@"$os_version"];
-    [properties setValue:[Mixpanel deviceModel] forKey:@"$model"];
-    [properties setValue:[Mixpanel deviceModel] forKey:@"mp_device_model"]; // legacy
-
-    CGRect screenRect = [NSScreen mainScreen].frame;
-    [properties setValue:[NSNumber numberWithInt:(int)screenRect.size.width] forKey:@"$screen_height"];
-    [properties setValue:[NSNumber numberWithInt:(int)screenRect.size.height] forKey:@"$screen_width"];
-
-#endif
-    
-
-    return [NSDictionary dictionaryWithDictionary:properties];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedInstance = [[super alloc] initWithToken:apiToken andFlushInterval:60];
+    });
+    return sharedInstance;
 }
 
-+ (NSString *)deviceModel
++ (Mixpanel *)sharedInstance
+{
+    if (sharedInstance == nil) {
+        NSLog(@"%@ warning sharedInstance called before sharedInstanceWithToken:", self);
+    }
+    return sharedInstance;
+}
+
+- (instancetype)initWithToken:(NSString *)apiToken andFlushInterval:(NSUInteger)flushInterval
+{
+    if (apiToken == nil) {
+        apiToken = @"";
+    }
+    if ([apiToken length] == 0) {
+        NSLog(@"%@ warning empty api token", self);
+    }
+    if (self = [self init]) {
+        self.people = [[MixpanelPeople alloc] initWithMixpanel:self];
+        self.apiToken = apiToken;
+        _flushInterval = flushInterval;
+        self.flushOnBackground = YES;
+        self.showNetworkActivityIndicator = YES;
+        self.serverURL = @"https://api.mixpanel.com";
+
+
+        self.distinctId = [self defaultDistinctId];
+        self.superProperties = [NSMutableDictionary dictionary];
+        self.automaticProperties = [self collectAutomaticProperties];
+        self.eventsQueue = [NSMutableArray array];
+        self.peopleQueue = [NSMutableArray array];
+        NSString *label = [NSString stringWithFormat:@"com.mixpanel.%@.%p", apiToken, self];
+        _serialQueue = dispatch_queue_create([label UTF8String], DISPATCH_QUEUE_SERIAL);
+        self.dateFormatter = [[NSDateFormatter alloc] init];
+        [_dateFormatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"];
+        [_dateFormatter setTimeZone:[NSTimeZone timeZoneWithAbbreviation:@"UTC"]];
+
+
+        // wifi reachability
+        BOOL reachabilityOk = NO;
+        if ((_reachability = SCNetworkReachabilityCreateWithName(NULL, "api.mixpanel.com")) != NULL) {
+            SCNetworkReachabilityContext context = {0, (__bridge void*)self, NULL, NULL, NULL};
+            if (SCNetworkReachabilitySetCallback(_reachability, MixpanelReachabilityCallback, &context)) {
+                if (SCNetworkReachabilitySetDispatchQueue(_reachability, _serialQueue)) {
+                    reachabilityOk = YES;
+                    MixpanelDebug(@"%@ successfully set up reachability callback", self);
+                } else {
+                    // cleanup callback if setting dispatch queue failed
+                    SCNetworkReachabilitySetCallback(_reachability, NULL, NULL);
+                }
+            }
+        }
+        if (!reachabilityOk) {
+            NSLog(@"%@ failed to set up reachability callback: %s", self, SCErrorString(SCError()));
+        }
+
+        NSNotificationCenter *notificationCenter = [NSNotificationCenter defaultCenter];
+
+        // cellular info
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 70000
+        if (floor(NSFoundationVersionNumber) > NSFoundationVersionNumber_iOS_6_1) {
+            [self setCurrentRadio];
+            [notificationCenter addObserver:self
+                                   selector:@selector(setCurrentRadio)
+                                       name:CTRadioAccessTechnologyDidChangeNotification
+                                     object:nil];
+        }
+#endif
+
+        [notificationCenter addObserver:self
+                               selector:@selector(applicationWillTerminate:)
+                                   name:NSApplicationWillTerminateNotification
+                                 object:nil];
+        [notificationCenter addObserver:self
+                               selector:@selector(applicationWillResignActive:)
+                                   name:NSApplicationWillResignActiveNotification
+                                 object:nil];
+        [notificationCenter addObserver:self
+                               selector:@selector(applicationDidBecomeActive:)
+                                   name:NSApplicationDidBecomeActiveNotification
+                                 object:nil];
+        [self unarchive];
+    }
+
+    return self;
+}
+
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (_reachability != NULL) {
+        if (!SCNetworkReachabilitySetCallback(_reachability, NULL, NULL)) {
+            NSLog(@"%@ error unsetting reachability callback", self);
+        }
+        if (!SCNetworkReachabilitySetDispatchQueue(_reachability, NULL)) {
+            NSLog(@"%@ error unsetting reachability dispatch queue", self);
+        }
+        CFRelease(_reachability);
+        _reachability = NULL;
+        MixpanelDebug(@"realeased reachability");
+    }
+}
+
+- (NSString *)description
+{
+    return [NSString stringWithFormat:@"<Mixpanel: %p %@>", self, self.apiToken];
+}
+
+- (NSString *)deviceModel
 {
     size_t size;
-    sysctlbyname("hw.machine", NULL, &size, NULL, 0);
+    sysctlbyname("hw.model", NULL, &size, NULL, 0);
     
     char *answer = malloc(size);
-    sysctlbyname("hw.machine", answer, &size, NULL, 0);
+    sysctlbyname("hw.model", answer, &size, NULL, 0);
     
     NSString *results = [NSString stringWithCString:answer encoding:NSUTF8StringEncoding];
     
     free(answer);
     return results;
+
 }
 
-+ (BOOL)wifiAvailable
+
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 70000
+- (void)setCurrentRadio
 {
-    struct sockaddr_in sockAddr;
-    bzero(&sockAddr, sizeof(sockAddr));
-    sockAddr.sin_len = sizeof(sockAddr);
-    sockAddr.sin_family = AF_INET;
+    dispatch_async(self.serialQueue, ^(){
+        NSMutableDictionary *properties = [self.automaticProperties mutableCopy];
+        properties[@"$radio"] = [self currentRadio];
+        self.automaticProperties = [properties copy];
+    });
+}
 
-    SCNetworkReachabilityRef nrRef = SCNetworkReachabilityCreateWithAddress(NULL, (struct sockaddr *)&sockAddr);
-    SCNetworkReachabilityFlags flags;
-    BOOL didRetrieveFlags = SCNetworkReachabilityGetFlags(nrRef, &flags);
-    if (!didRetrieveFlags) {
-        MixpanelDebug(@"%@ unable to fetch the network reachablity flags", self);
+- (NSString *)currentRadio
+{
+    NSString *radio = _telephonyInfo.currentRadioAccessTechnology;
+    if (!radio) {
+        radio = @"None";
+    } else if ([radio hasPrefix:@"CTRadioAccessTechnology"]) {
+        radio = [radio substringFromIndex:23];
     }
-
-    CFRelease(nrRef);
-
-    if (!didRetrieveFlags || (flags & kSCNetworkReachabilityFlagsReachable) != kSCNetworkReachabilityFlagsReachable) {
-        // unable to connect to a network (no signal or airplane mode activated)
-        return NO;
-    }
-
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-    if ((flags & kSCNetworkReachabilityFlagsIsWWAN) == kSCNetworkReachabilityFlagsIsWWAN) {
-        // only a cellular network connection is available.
-        return NO;
-    }
+    return radio;
+}
 #endif
-    return YES;
+
+- (NSDictionary *)collectAutomaticProperties
+{
+    NSMutableDictionary *properties = [NSMutableDictionary dictionary];
+    NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+    
+    [properties setValue:@"mac" forKey:@"mp_lib"];
+    [properties setValue:VERSION forKey:@"$lib_version"];
+    
+    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"] forKey:@"$app_version"];
+    
+    [properties setValue:@"Apple" forKey:@"$manufacturer"];
+    [properties setValue:@"Mac OS X" forKey:@"$os"];
+    [properties setValue:[processInfo operatingSystemVersionString] forKey:@"$os_version"];
+    
+    [properties setValue:[self deviceModel] forKey:@"$model"];
+    [properties setValue:[self deviceModel] forKey:@"mp_device_model"]; // legacy
+    
+    NSSize size = [NSScreen mainScreen].frame.size;
+    [properties setValue:[NSNumber numberWithInt:(int)size.height] forKey:@"$screen_height"];
+    [properties setValue:[NSNumber numberWithInt:(int)size.width] forKey:@"$screen_width"];
+    
+    return [properties copy];
 }
 
 + (BOOL)inBackground
 {
     BOOL inBg = NO;
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= 40000
-    inBg = [[UIApplication sharedApplication] applicationState] == UIApplicationStateBackground;
-#endif
-    if (inBg) {
-        MixpanelDebug(@"%@ in background", self);
-    }
+    inBg = ![[NSRunningApplication currentApplication] isActive];
+
     return inBg;
 }
 
-#pragma mark * Encoding/decoding utilities
-
-+ (NSData *)JSONSerializeObject:(id)obj
++ (NSDictionary *)interfaces
 {
-    id coercedObj = [Mixpanel JSONSerializableObjectForObject:obj];
+    NSMutableDictionary *theDictionary = [NSMutableDictionary dictionary];
+    
+    BOOL success;
+    struct ifaddrs * addrs;
+    const struct ifaddrs * cursor;
+    const struct sockaddr_dl * dlAddr;
+    const uint8_t * base;
+    
+    success = getifaddrs(&addrs) == 0;
+    if (success) {
+        cursor = addrs;
+        while (cursor != NULL) {
+            if ((cursor->ifa_addr->sa_family == AF_LINK) && (((const struct sockaddr_dl *)cursor->ifa_addr)->sdl_type == IFT_ETHER)) {
+                // fprintf(stderr, "%s:", cursor->ifa_name);
+                dlAddr = (const struct sockaddr_dl *)cursor->ifa_addr;
+                base = (const uint8_t *) &dlAddr->sdl_data[dlAddr->sdl_nlen];
+                
+                NSString *theKey = [NSString stringWithUTF8String:cursor->ifa_name];
+                NSString *theValue = [NSString stringWithFormat:@"%02x:%02x:%02x:%02x:%02x:%02x", base[0], base[1], base[2], base[3], base[4], base[5]];
+                [theDictionary setObject:theValue forKey:theKey];
+            }
+            
+            cursor = cursor->ifa_next;
+        }
+        freeifaddrs(addrs);
+    }
+    return(theDictionary);
+}
 
-    MPCJSONDataSerializer *serializer = [MPCJSONDataSerializer serializer];
++ (NSString *)uniqueDeviceString
+{
+    NSDictionary *dict = [Mixpanel interfaces];
+    NSArray *keys = [dict allKeys];
+    keys = [keys  sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
+    
+    NSString *bundleName = [[[NSBundle mainBundle] infoDictionary] objectForKey:(id)kCFBundleNameKey];
+    
+    // while most apps will define CFBundleName, it's not guaranteed;
+    // an app can choose to define it or not so when it's missing, use the bundle file name
+    if (bundleName == nil) {
+        bundleName = [[[NSBundle mainBundle] bundlePath] lastPathComponent];
+    }
+    
+    NSMutableString *string = [NSMutableString stringWithString:bundleName];
+    for (NSString *key in keys) {
+        [string appendString:[dict objectForKey:key]];
+    }
+    return string;
+}
+
+#pragma mark - Encoding/decoding utilities
+
+- (NSData *)JSONSerializeObject:(id)obj
+{
+    id coercedObj = [self JSONSerializableObjectForObject:obj];
     NSError *error = nil;
     NSData *data = nil;
     @try {
-        data = [serializer serializeObject:coercedObj error:&error];
+        data = [NSJSONSerialization dataWithJSONObject:coercedObj options:0 error:&error];
     }
     @catch (NSException *exception) {
         NSLog(@"%@ exception encoding api data: %@", self, exception);
@@ -232,7 +344,7 @@ static Mixpanel *sharedInstance = nil;
     return data;
 }
 
-+ (id)JSONSerializableObjectForObject:(id)obj
+- (id)JSONSerializableObjectForObject:(id)obj
 {
     // valid json types
     if ([obj isKindOfClass:[NSString class]] ||
@@ -240,12 +352,11 @@ static Mixpanel *sharedInstance = nil;
         [obj isKindOfClass:[NSNull class]]) {
         return obj;
     }
-
     // recurse on containers
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *a = [NSMutableArray array];
         for (id i in obj) {
-            [a addObject:[Mixpanel JSONSerializableObjectForObject:i]];
+            [a addObject:[self JSONSerializableObjectForObject:i]];
         }
         return [NSArray arrayWithArray:a];
     }
@@ -259,44 +370,56 @@ static Mixpanel *sharedInstance = nil;
             } else {
                 stringKey = [NSString stringWithString:key];
             }
-            id v = [Mixpanel JSONSerializableObjectForObject:[obj objectForKey:key]];
+            id v = [self JSONSerializableObjectForObject:[obj objectForKey:key]];
             [d setObject:v forKey:stringKey];
         }
         return [NSDictionary dictionaryWithDictionary:d];
     }
-
     // some common cases
     if ([obj isKindOfClass:[NSDate class]]) {
-        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-        [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss"];
-        [formatter setTimeZone:[NSTimeZone timeZoneWithAbbreviation:@"UTC"]];
-        NSString *s = [formatter stringFromDate:obj];
-        [formatter release];
-        return s;
+        return [self.dateFormatter stringFromDate:obj];
     } else if ([obj isKindOfClass:[NSURL class]]) {
         return [obj absoluteString];
     }
-
     // default to sending the object's description
     NSString *s = [obj description];
     NSLog(@"%@ warning: property values should be valid json types. got: %@. coercing to: %@", self, [obj class], s);
     return s;
 }
 
-+ (NSString *)encodeAPIData:(NSArray *)array
+- (NSString *)encodeAPIData:(NSArray *)array
 {
     NSString *b64String = @"";
-    NSData *data = [Mixpanel JSONSerializeObject:array];
+    NSData *data = [self JSONSerializeObject:array];
     if (data) {
         b64String = [data mp_base64EncodedString];
-        b64String = (id)CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault,
-                                                                (CFStringRef)b64String,
+        b64String = (id)CFBridgingRelease(CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault,
+                                                                (__bridge CFStringRef)b64String,
                                                                 NULL,
                                                                 CFSTR("!*'();:@&=+$,/?%#[]"),
-                                                                kCFStringEncodingUTF8);
+                                                                kCFStringEncodingUTF8));
     }
-    return [b64String autorelease];
+    return b64String;
 }
+
++ (NSString *)calculateHMACSHA1withString:(NSString *)str andKey:(NSString *)key
+{
+    const char *cStr = [str UTF8String];
+    const char *cSecretStr = [key UTF8String];
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    memset((void *)digest, 0x0, CC_SHA1_DIGEST_LENGTH);
+    CCHmac(kCCHmacAlgSHA1, cSecretStr, strlen(cSecretStr), cStr, strlen(cStr), digest);
+    return [NSString stringWithFormat:
+            @"%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",
+            digest[0],  digest[1],  digest[2],  digest[3],
+            digest[4],  digest[5],  digest[6],  digest[7],
+            digest[8],  digest[9],  digest[10], digest[11],
+            digest[12], digest[13], digest[14], digest[15],
+            digest[16], digest[17], digest[18], digest[19]
+            ];
+}
+
+#pragma mark - Tracking
 
 + (void)assertPropertyTypes:(NSDictionary *)properties
 {
@@ -314,98 +437,46 @@ static Mixpanel *sharedInstance = nil;
     }
 }
 
-#pragma mark * Initializiation
-
-+ (instancetype)sharedInstanceWithToken:(NSString *)apiToken
+- (NSString *)defaultDistinctId
 {
-    @synchronized(self) {
-        if (sharedInstance == nil) {
-            sharedInstance = [[super alloc] initWithToken:apiToken andFlushInterval:60];
-        }
-        return sharedInstance;
-    }
+    return [Mixpanel calculateHMACSHA1withString:[Mixpanel uniqueDeviceString] andKey:self.apiToken];
 }
 
-+ (instancetype)sharedInstance
-{
-    @synchronized(self) {
-        if (sharedInstance == nil) {
-            NSLog(@"%@ warning sharedInstance called before sharedInstanceWithToken:", self);
-        }
-        return sharedInstance;
-    }
-}
-
-- (id)initWithToken:(NSString *)apiToken andFlushInterval:(NSUInteger)flushInterval
-{
-    if (apiToken == nil) {
-        apiToken = @"";
-    }
-    if ([apiToken length] == 0) {
-        NSLog(@"%@ warning empty api token", self);
-    }
-    if (self = [self init]) {
-        self.people = [[[MixpanelPeople alloc] initWithMixpanel:self] autorelease];
-
-        self.apiToken = apiToken;
-        self.flushInterval = flushInterval;
-        self.flushOnBackground = YES;
-        self.flushOnInactive = YES;
-        self.showNetworkActivityIndicator = YES;
-        self.serverURL = @"https://api.mixpanel.com";
-        
-        self.distinctId = [self defaultDistinctId];
-        self.superProperties = [NSMutableDictionary dictionary];
-
-        self.eventsQueue = [NSMutableArray array];
-        self.peopleQueue = [NSMutableArray array];
-        
-        [self addApplicationObservers];
-        
-        [self unarchive];
-
-    }
-    return self;
-}
-
-#pragma mark * Identity
 
 - (void)identify:(NSString *)distinctId
 {
-    @synchronized(self) {
+    if (distinctId == nil || distinctId.length == 0) {
+        NSLog(@"%@ error blank distinct id: %@", self, distinctId);
+        return;
+    }
+    dispatch_async(_serialQueue, ^{
         self.distinctId = distinctId;
         self.people.distinctId = distinctId;
-        if (distinctId != nil && distinctId.length != 0 && self.people.unidentifiedQueue.count > 0) {
+        if ([self.people.unidentifiedQueue count] > 0) {
             for (NSMutableDictionary *r in self.people.unidentifiedQueue) {
                 [r setObject:distinctId forKey:@"$distinct_id"];
                 [self.peopleQueue addObject:r];
             }
             [self.people.unidentifiedQueue removeAllObjects];
+            [self archivePeople];
         }
         if ([Mixpanel inBackground]) {
             [self archiveProperties];
-            [self archivePeople];
         }
-    }
+    });
 }
 
-#pragma mark * Tracking
-
-- (NSString *)defaultDistinctId
+- (void)createAlias:(NSString *)alias forDistinctID:(NSString *)distinctID
 {
-    NSString *distinctId = nil;
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-    if (NSClassFromString(@"ASIdentifierManager")) {
-        distinctId = ASIdentifierManager.sharedManager.advertisingIdentifier.UUIDString;
+    if (!alias || [alias length] == 0) {
+        NSLog(@"%@ create alias called with empty alias: %@", self, alias);
+        return;
     }
-#endif
-    if (!distinctId) {
-        distinctId = ODIN1();
+    if (!distinctID || [distinctID length] == 0) {
+        NSLog(@"%@ create alias called with empty distinct id: %@", self, distinctID);
+        return;
     }
-    if (!distinctId) {
-        NSLog(@"%@ error getting default distinct id: both iOS IFA and ODIN1 failed", self);
-    }
-    return distinctId;
+    [self track:@"$create_alias" properties:@{@"distinct_id": distinctID, @"alias": alias}];
 }
 
 - (void)track:(NSString *)event
@@ -415,15 +486,18 @@ static Mixpanel *sharedInstance = nil;
 
 - (void)track:(NSString *)event properties:(NSDictionary *)properties
 {
-    @synchronized(self) {
-        if (event == nil || [event length] == 0) {
-            NSLog(@"%@ mixpanel track called with empty event parameter. using 'mp_event'", self);
-            event = @"mp_event";
-        }
+    if (event == nil || [event length] == 0) {
+        NSLog(@"%@ mixpanel track called with empty event parameter. using 'mp_event'", self);
+        event = @"mp_event";
+    }
+    properties = [properties copy];
+    [Mixpanel assertPropertyTypes:properties];
+    NSNumber *epochSeconds = @(round([[NSDate date] timeIntervalSince1970]));
+    dispatch_async(_serialQueue, ^{
         NSMutableDictionary *p = [NSMutableDictionary dictionary];
-        [p addEntriesFromDictionary:[Mixpanel deviceInfoProperties]];
+        [p addEntriesFromDictionary:self.automaticProperties];
         [p setObject:self.apiToken forKey:@"token"];
-        [p setObject:[NSNumber numberWithLong:(long)[[NSDate date] timeIntervalSince1970]] forKey:@"time"];
+        [p setObject:epochSeconds forKey:@"time"];
         if (self.nameTag) {
             [p setObject:self.nameTag forKey:@"mp_name_tag"];
         }
@@ -434,122 +508,133 @@ static Mixpanel *sharedInstance = nil;
         if (properties) {
             [p addEntriesFromDictionary:properties];
         }
-
-        [Mixpanel assertPropertyTypes:properties];
-
-        NSDictionary *e = [NSDictionary dictionaryWithObjectsAndKeys:event, @"event", [NSDictionary dictionaryWithDictionary:p], @"properties", nil];
+        NSDictionary *e = @{@"event": event, @"properties": [NSDictionary dictionaryWithDictionary:p]};
         MixpanelLog(@"%@ queueing event: %@", self, e);
         [self.eventsQueue addObject:e];
+        if ([self.eventsQueue count] > 500) {
+            [self.eventsQueue removeObjectAtIndex:0];
+        }
         if ([Mixpanel inBackground]) {
             [self archiveEvents];
         }
-    }
+    });
 }
-
-#pragma mark * Super property methods
 
 - (void)registerSuperProperties:(NSDictionary *)properties
 {
+    properties = [properties copy];
     [Mixpanel assertPropertyTypes:properties];
-    @synchronized(self) {
-        [self.superProperties addEntriesFromDictionary:properties];
+    dispatch_async(_serialQueue, ^{
+        NSMutableDictionary *tmp = [NSMutableDictionary dictionaryWithDictionary:self.superProperties];
+        [tmp addEntriesFromDictionary:properties];
+        self.superProperties = [NSDictionary dictionaryWithDictionary:tmp];
         if ([Mixpanel inBackground]) {
             [self archiveProperties];
         }
-    }
+    });
 }
 
 - (void)registerSuperPropertiesOnce:(NSDictionary *)properties
 {
+    properties = [properties copy];
     [Mixpanel assertPropertyTypes:properties];
-    @synchronized(self) {
+    dispatch_async(_serialQueue, ^{
+        NSMutableDictionary *tmp = [NSMutableDictionary dictionaryWithDictionary:self.superProperties];
         for (NSString *key in properties) {
-            if ([self.superProperties objectForKey:key] == nil) {
-                [self.superProperties setObject:[properties objectForKey:key] forKey:key];
+            if ([tmp objectForKey:key] == nil) {
+                [tmp setObject:[properties objectForKey:key] forKey:key];
             }
         }
+        self.superProperties = [NSDictionary dictionaryWithDictionary:tmp];
         if ([Mixpanel inBackground]) {
             [self archiveProperties];
         }
-    }
+    });
 }
 
 - (void)registerSuperPropertiesOnce:(NSDictionary *)properties defaultValue:(id)defaultValue
 {
+    properties = [properties copy];
     [Mixpanel assertPropertyTypes:properties];
-    @synchronized(self) {
+    dispatch_async(_serialQueue, ^{
+        NSMutableDictionary *tmp = [NSMutableDictionary dictionaryWithDictionary:self.superProperties];
         for (NSString *key in properties) {
-            id value = [self.superProperties objectForKey:key];
+            id value = [tmp objectForKey:key];;
             if (value == nil || [value isEqual:defaultValue]) {
-                [self.superProperties setObject:[properties objectForKey:key] forKey:key];
+                [tmp setObject:[properties objectForKey:key] forKey:key];
             }
         }
+        self.superProperties = [NSDictionary dictionaryWithDictionary:tmp];
         if ([Mixpanel inBackground]) {
             [self archiveProperties];
         }
-    }
+    });
 }
 
 - (void)unregisterSuperProperty:(NSString *)propertyName
 {
-    @synchronized(self) {
-        if ([self.superProperties objectForKey:propertyName] != nil) {
-            [self.superProperties removeObjectForKey:propertyName];
-            if ([Mixpanel inBackground]) {
-                [self archiveProperties];
-            }
+    dispatch_async(_serialQueue, ^{
+        NSMutableDictionary *tmp = [NSMutableDictionary dictionaryWithDictionary:self.superProperties];
+        if ([tmp objectForKey:propertyName] != nil) {
+            [tmp removeObjectForKey:propertyName];
         }
-    }
+        self.superProperties = [NSDictionary dictionaryWithDictionary:tmp];
+        if ([Mixpanel inBackground]) {
+            [self archiveProperties];
+        }
+    });
 }
 
 - (void)clearSuperProperties
 {
-    @synchronized(self) {
-        [self.superProperties removeAllObjects];
+    dispatch_async(_serialQueue, ^{
+        self.superProperties = @{};
         if ([Mixpanel inBackground]) {
             [self archiveProperties];
         }
-    }
+    });
 }
 
 - (NSDictionary *)currentSuperProperties
 {
-    @synchronized(self) {
-        return [[self.superProperties copy] autorelease];
-    }
+    return [self.superProperties copy];
 }
 
 - (void)reset
 {
-    @synchronized(self) {
+    dispatch_async(_serialQueue, ^{
         self.distinctId = [self defaultDistinctId];
         self.nameTag = nil;
         self.superProperties = [NSMutableDictionary dictionary];
-
         self.people.distinctId = nil;
         self.people.unidentifiedQueue = [NSMutableArray array];
-
         self.eventsQueue = [NSMutableArray array];
         self.peopleQueue = [NSMutableArray array];
-        
         [self archive];
-    }
+    });
 }
 
-#pragma mark * Network control
+#pragma mark - Network control
+
+- (NSUInteger)flushInterval
+{
+    @synchronized(self) {
+        return _flushInterval;
+    }
+}
 
 - (void)setFlushInterval:(NSUInteger)interval
 {
     @synchronized(self) {
         _flushInterval = interval;
-        [self startFlushTimer];
     }
+    [self startFlushTimer];
 }
 
 - (void)startFlushTimer
 {
-    @synchronized(self) {
-        [self stopFlushTimer];
+    [self stopFlushTimer];
+    dispatch_async(dispatch_get_main_queue(), ^{
         if (self.flushInterval > 0) {
             self.timer = [NSTimer scheduledTimerWithTimeInterval:self.flushInterval
                                                           target:self
@@ -558,158 +643,111 @@ static Mixpanel *sharedInstance = nil;
                                                          repeats:YES];
             MixpanelDebug(@"%@ started flush timer: %@", self, self.timer);
         }
-    }
+    });
 }
 
 - (void)stopFlushTimer
 {
-    @synchronized(self) {
+    dispatch_async(dispatch_get_main_queue(), ^{
         if (self.timer) {
             [self.timer invalidate];
             MixpanelDebug(@"%@ stopped flush timer: %@", self, self.timer);
         }
         self.timer = nil;
-    }
+    });
 }
 
 - (void)flush
 {
-    // If the app is currently in the background but Mixpanel has not requested
-    // to run a background task, the flush will be cut short. This can happen
-    // when the app forces a flush from within its own background task.
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-    if ([Mixpanel inBackground] && self.taskId == UIBackgroundTaskInvalid) {
-        [self flushInBackgroundTask];
-        return;
-    }
-#endif
-    @synchronized(self) {
-        if ([self.delegate respondsToSelector:@selector(mixpanelWillFlush:)]) {
-            if (![self.delegate mixpanelWillFlush:self]) {
-                MixpanelDebug(@"%@ delegate deferred flush", self);
-                return;
-            }
+    dispatch_async(_serialQueue, ^{
+        MixpanelDebug(@"%@ flush starting", self);
+
+        __strong id<MixpanelDelegate> strongDelegate = _delegate;
+        if (strongDelegate != nil && [strongDelegate respondsToSelector:@selector(mixpanelWillFlush:)] && ![strongDelegate mixpanelWillFlush:self]) {
+            MixpanelDebug(@"%@ flush deferred by delegate", self);
+            return;
         }
-        MixpanelDebug(@"%@ flushing data to %@", self, self.serverURL);
+
         [self flushEvents];
         [self flushPeople];
-    }
-}
 
-- (void)flushInBackgroundTask
-{
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= 40000
-    @synchronized(self) {
-        if ([[UIApplication sharedApplication] respondsToSelector:@selector(beginBackgroundTaskWithExpirationHandler:)] &&
-            [[UIApplication sharedApplication] respondsToSelector:@selector(endBackgroundTask:)]) {
-
-            self.taskId = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
-                MixpanelDebug(@"%@ flush background task %u cut short", self, self.taskId);
-                [self cancelFlush];
-                [[UIApplication sharedApplication] endBackgroundTask:self.taskId];
-                self.taskId = UIBackgroundTaskInvalid;
-            }];
-
-            MixpanelDebug(@"%@ starting flush background task %u", self, self.taskId);
-            [self flush];
-
-            // connection callbacks end this task by calling endBackgroundTaskIfComplete
-        }
-    }
-#endif
+        MixpanelDebug(@"%@ flush complete", self);
+    });
 }
 
 - (void)flushEvents
 {
-    if ([self.eventsQueue count] == 0) {
-        MixpanelDebug(@"%@ no events to flush", self);
-        return;
-    } else if (self.eventsConnection != nil) {
-        MixpanelDebug(@"%@ events connection already open", self);
-        return;
-    } else if ([self.eventsQueue count] > 50) {
-        self.eventsBatch = [self.eventsQueue subarrayWithRange:NSMakeRange(0, 50)];
-    } else {
-        self.eventsBatch = [NSArray arrayWithArray:self.eventsQueue];
-    }
-    
-    NSString *data = [Mixpanel encodeAPIData:self.eventsBatch];
-    NSString *postBody = [NSString stringWithFormat:@"ip=1&data=%@", data];
-    
-    MixpanelDebug(@"%@ flushing %u of %u queued events: %@", self, self.eventsBatch.count, self.eventsQueue.count, self.eventsQueue);
-
-    self.eventsConnection = [self apiConnectionWithEndpoint:@"/track/" andBody:postBody];
-
-    [self updateNetworkActivityIndicator];
+    [self flushQueue:_eventsQueue
+            endpoint:@"/track/"];
 }
 
 - (void)flushPeople
 {
-    if ([self.peopleQueue count] == 0) {
-        MixpanelDebug(@"%@ no people to flush", self);
-        return;
-    } else if (self.peopleConnection != nil) {
-        MixpanelDebug(@"%@ people connection already open", self);
-        return;
-    } else if ([self.peopleQueue count] > 50) {
-        self.peopleBatch = [self.peopleQueue subarrayWithRange:NSMakeRange(0, 50)];
-    } else {
-        self.peopleBatch = [NSArray arrayWithArray:self.peopleQueue];
-    }
-    
-    NSString *data = [Mixpanel encodeAPIData:self.peopleBatch];
-    NSString *postBody = [NSString stringWithFormat:@"data=%@", data];
-    
-    MixpanelDebug(@"%@ flushing %u of %u queued people: %@", self, self.peopleBatch.count, self.peopleQueue.count, self.peopleQueue);
-
-    self.peopleConnection = [self apiConnectionWithEndpoint:@"/engage/" andBody:postBody];
-
-    [self updateNetworkActivityIndicator];
+    [self flushQueue:_peopleQueue
+            endpoint:@"/engage/"];
 }
 
-- (void)cancelFlush
+- (void)flushQueue:(NSMutableArray *)queue endpoint:(NSString *)endpoint
 {
-    if (self.eventsConnection == nil) {
-        MixpanelDebug(@"%@ no events connection to cancel", self);
-    } else {
-        MixpanelDebug(@"%@ cancelling events connection", self);
-        [self.eventsConnection cancel];
-        self.eventsConnection = nil;
-    }
-    if (self.peopleConnection == nil) {
-        MixpanelDebug(@"%@ no people connection to cancel", self);
-    } else {
-        MixpanelDebug(@"%@ cancelling people connection", self);
-        [self.peopleConnection cancel];
-        self.peopleConnection = nil;
+    while ([queue count] > 0) {
+        NSUInteger batchSize = ([queue count] > 50) ? 50 : [queue count];
+        NSArray *batch = [queue subarrayWithRange:NSMakeRange(0, batchSize)];
+
+        NSString *requestData = [self encodeAPIData:batch];
+        NSString *postBody = [NSString stringWithFormat:@"ip=1&data=%@", requestData];
+        MixpanelDebug(@"%@ flushing %lu of %lu to %@: %@", self, (unsigned long)[batch count], (unsigned long)[queue count], endpoint, queue);
+        NSURLRequest *request = [self apiRequestWithEndpoint:endpoint andBody:postBody];
+        NSError *error = nil;
+
+
+        NSData *responseData = [NSURLConnection sendSynchronousRequest:request returningResponse:nil error:&error];
+
+
+        if (error) {
+            NSLog(@"%@ network failure: %@", self, error);
+            break;
+        }
+
+        NSString *response = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
+        if ([response intValue] == 0) {
+            NSLog(@"%@ %@ api rejected some items", self, endpoint);
+        };
+
+        [queue removeObjectsInArray:batch];
     }
 }
 
-- (void)updateNetworkActivityIndicator
+
+- (void)reachabilityChanged:(SCNetworkReachabilityFlags)flags
 {
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-    @synchronized(self) {
-        BOOL visible = self.showNetworkActivityIndicator && (self.eventsConnection || self.peopleConnection);
-        [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:visible];
-    }
-#endif
+    // this should be run in the serial queue. the reason we don't dispatch_async here
+    // is because it's only ever called by the reachability callback, which is already
+    // set to run on the serial queue. see SCNetworkReachabilitySetDispatchQueue in init
+    BOOL wifi = (flags & kSCNetworkReachabilityFlagsReachable) && !(flags & kSCNetworkReachabilityFlagsIsDirect);
+    NSMutableDictionary *properties = [self.automaticProperties mutableCopy];
+    [properties setObject:[NSNumber numberWithBool:wifi] forKey:@"$wifi"];
+    self.automaticProperties = [properties copy];
+    MixpanelDebug(@"%@ reachability changed, wifi=%d", self, wifi);
 }
 
-#pragma mark * Persistence
+- (NSURLRequest *)apiRequestWithEndpoint:(NSString *)endpoint andBody:(NSString *)body
+{
+    NSURL *URL = [NSURL URLWithString:[self.serverURL stringByAppendingString:endpoint]];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:URL];
+    [request setValue:@"gzip" forHTTPHeaderField:@"Accept-Encoding"];
+    [request setHTTPMethod:@"POST"];
+    [request setHTTPBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
+    MixpanelDebug(@"%@ http request: %@?%@", self, URL, body);
+    return request;
+}
+
+#pragma mark - Persistence
 
 - (NSString *)filePathForData:(NSString *)data
 {
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
     NSString *filename = [NSString stringWithFormat:@"mixpanel-%@-%@.plist", self.apiToken, data];
     return [[NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES) lastObject]
             stringByAppendingPathComponent:filename];
-#else 
-    NSString *filename = [NSString stringWithFormat:@"mixpanel-%@-%@.plist", self.apiToken, data];
-    return [[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) lastObject]
-            stringByAppendingPathComponent:filename];
-
-
-#endif
 }
 
 - (NSString *)eventsFilePath
@@ -729,59 +767,51 @@ static Mixpanel *sharedInstance = nil;
 
 - (void)archive
 {
-    @synchronized(self) {
-        [self archiveEvents];
-        [self archivePeople];
-        [self archiveProperties];
-    }
+    [self archiveEvents];
+    [self archivePeople];
+    [self archiveProperties];
 }
 
 - (void)archiveEvents
 {
-    @synchronized(self) {
-        NSString *filePath = [self eventsFilePath];
-        MixpanelDebug(@"%@ archiving events data to %@: %@", self, filePath, self.eventsQueue);
-        if (![NSKeyedArchiver archiveRootObject:self.eventsQueue toFile:filePath]) {
-            NSLog(@"%@ unable to archive events data", self);
-        }
+    NSString *filePath = [self eventsFilePath];
+    NSMutableArray *eventsQueueCopy = [NSMutableArray arrayWithArray:[self.eventsQueue copy]];
+    MixpanelDebug(@"%@ archiving events data to %@: %@", self, filePath, eventsQueueCopy);
+    if (![NSKeyedArchiver archiveRootObject:eventsQueueCopy toFile:filePath]) {
+        NSLog(@"%@ unable to archive events data", self);
     }
 }
 
 - (void)archivePeople
 {
-    @synchronized(self) {
-        NSString *filePath = [self peopleFilePath];
-        MixpanelDebug(@"%@ archiving people data to %@: %@", self, filePath, self.peopleQueue);
-        if (![NSKeyedArchiver archiveRootObject:self.peopleQueue toFile:filePath]) {
-            NSLog(@"%@ unable to archive people data", self);
-        }
+    NSString *filePath = [self peopleFilePath];
+    NSMutableArray *peopleQueueCopy = [NSMutableArray arrayWithArray:[self.peopleQueue copy]];
+    MixpanelDebug(@"%@ archiving people data to %@: %@", self, filePath, peopleQueueCopy);
+    if (![NSKeyedArchiver archiveRootObject:peopleQueueCopy toFile:filePath]) {
+        NSLog(@"%@ unable to archive people data", self);
     }
 }
 
 - (void)archiveProperties
 {
-    @synchronized(self) {
-        NSString *filePath = [self propertiesFilePath];
-        NSMutableDictionary *properties = [NSMutableDictionary dictionary];
-        [properties setValue:self.distinctId forKey:@"distinctId"];
-        [properties setValue:self.nameTag forKey:@"nameTag"];
-        [properties setValue:self.superProperties forKey:@"superProperties"];
-        [properties setValue:self.people.distinctId forKey:@"peopleDistinctId"];
-        [properties setValue:self.people.unidentifiedQueue forKey:@"peopleUnidentifiedQueue"];
-        MixpanelDebug(@"%@ archiving properties data to %@: %@", self, filePath, properties);
-        if (![NSKeyedArchiver archiveRootObject:properties toFile:filePath]) {
-            NSLog(@"%@ unable to archive properties data", self);
-        }
+    NSString *filePath = [self propertiesFilePath];
+    NSMutableDictionary *p = [NSMutableDictionary dictionary];
+    [p setValue:self.distinctId forKey:@"distinctId"];
+    [p setValue:self.nameTag forKey:@"nameTag"];
+    [p setValue:self.superProperties forKey:@"superProperties"];
+    [p setValue:self.people.distinctId forKey:@"peopleDistinctId"];
+    [p setValue:self.people.unidentifiedQueue forKey:@"peopleUnidentifiedQueue"];
+    MixpanelDebug(@"%@ archiving properties data to %@: %@", self, filePath, p);
+    if (![NSKeyedArchiver archiveRootObject:p toFile:filePath]) {
+        NSLog(@"%@ unable to archive properties data", self);
     }
 }
 
 - (void)unarchive
 {
-    @synchronized(self) {
-        [self unarchiveEvents];
-        [self unarchivePeople];
-        [self unarchiveProperties];
-    }
+    [self unarchiveEvents];
+    [self unarchivePeople];
+    [self unarchiveProperties];
 }
 
 - (void)unarchiveEvents
@@ -793,8 +823,14 @@ static Mixpanel *sharedInstance = nil;
     }
     @catch (NSException *exception) {
         NSLog(@"%@ unable to unarchive events data, starting fresh", self);
-        [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
         self.eventsQueue = nil;
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
+        NSError *error;
+        BOOL removed = [[NSFileManager defaultManager] removeItemAtPath:filePath error:&error];
+        if (!removed) {
+            NSLog(@"%@ unable to remove archived events file at %@ - %@", self, filePath, error);
+        }
     }
     if (!self.eventsQueue) {
         self.eventsQueue = [NSMutableArray array];
@@ -810,8 +846,14 @@ static Mixpanel *sharedInstance = nil;
     }
     @catch (NSException *exception) {
         NSLog(@"%@ unable to unarchive people data, starting fresh", self);
-        [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
         self.peopleQueue = nil;
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
+        NSError *error;
+        BOOL removed = [[NSFileManager defaultManager] removeItemAtPath:filePath error:&error];
+        if (!removed) {
+            NSLog(@"%@ unable to remove archived people file at %@ - %@", self, filePath, error);
+        }
     }
     if (!self.peopleQueue) {
         self.peopleQueue = [NSMutableArray array];
@@ -828,307 +870,123 @@ static Mixpanel *sharedInstance = nil;
     }
     @catch (NSException *exception) {
         NSLog(@"%@ unable to unarchive properties data, starting fresh", self);
-        [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
+        NSError *error;
+        BOOL removed = [[NSFileManager defaultManager] removeItemAtPath:filePath error:&error];
+        if (!removed) {
+            NSLog(@"%@ unable to remove archived properties file at %@ - %@", self, filePath, error);
+        }
     }
     if (properties) {
-        self.distinctId = [properties objectForKey:@"distinctId"];
+        self.distinctId = [properties objectForKey:@"distinctId"] ? [properties objectForKey:@"distinctId"] : [self defaultDistinctId];
         self.nameTag = [properties objectForKey:@"nameTag"];
-        self.superProperties = [properties objectForKey:@"superProperties"];
+        self.superProperties = [properties objectForKey:@"superProperties"] ? [properties objectForKey:@"superProperties"] : [NSMutableDictionary dictionary];
         self.people.distinctId = [properties objectForKey:@"peopleDistinctId"];
-        self.people.unidentifiedQueue = [properties objectForKey:@"peopleUnidentifiedQueue"];
+        self.people.unidentifiedQueue = [properties objectForKey:@"peopleUnidentifiedQueue"] ? [properties objectForKey:@"peopleUnidentifiedQueue"] : [NSMutableArray array];
     }
 }
 
-#pragma mark * Application lifecycle events
-
-- (void)addApplicationObservers
-{
-    MixpanelDebug(@"%@ adding application observers", self);
-    NSNotificationCenter *notificationCenter = [NSNotificationCenter defaultCenter];
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-    NSString *termination = UIApplicationWillTerminateNotification;
-    NSString *inactive = UIApplicationWillResignActiveNotification;
-    NSString *active = UIApplicationDidBecomeActiveNotification;
-#else
-    NSString *termination = NSApplicationWillTerminateNotification;
-    NSString *inactive = NSApplicationWillResignActiveNotification;
-    NSString *active = NSApplicationDidBecomeActiveNotification;
-#endif
-
-    [notificationCenter addObserver:self
-                           selector:@selector(applicationWillTerminate:)
-                               name:termination
-                             object:nil];
-    [notificationCenter addObserver:self
-                           selector:@selector(applicationWillResignActive:)
-                               name:inactive
-                             object:nil];
-    [notificationCenter addObserver:self
-                           selector:@selector(applicationDidBecomeActive:)
-                               name:active
-                             object:nil];
-
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= 40000
-    if ([[UIDevice currentDevice] respondsToSelector:@selector(isMultitaskingSupported)] && &UIBackgroundTaskInvalid) {
-        self.taskId = UIBackgroundTaskInvalid;
-        if (&UIApplicationDidEnterBackgroundNotification) {
-            [notificationCenter addObserver:self
-                                   selector:@selector(applicationDidEnterBackground:)
-                                       name:UIApplicationDidEnterBackgroundNotification
-                                     object:nil];
-        }
-        if (&UIApplicationWillEnterForegroundNotification) {
-            [notificationCenter addObserver:self
-                                   selector:@selector(applicationWillEnterForeground:)
-                                       name:UIApplicationWillEnterForegroundNotification
-                                     object:nil];
-        }
-    }
-#endif
-}
-
-- (void)removeApplicationObservers
-{
-    MixpanelDebug(@"%@ removing application observers", self);
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
+#pragma mark - UIApplication notifications
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification
 {
     MixpanelDebug(@"%@ application did become active", self);
-    @synchronized(self) {
-        [self startFlushTimer];
-    }
+    [self startFlushTimer];
+
 }
 
 - (void)applicationWillResignActive:(NSNotification *)notification
 {
     MixpanelDebug(@"%@ application will resign active", self);
-    if (self.flushOnInactive) {
-      MixpanelDebug(@"Keep on flushing even though the application won't be active.");
-    } else {
-      @synchronized(self) {
-        [self stopFlushTimer];
-      }
+    [self stopFlushTimer];
+    
+    if (self.flushOnBackground){
+        [self flush];
     }
 }
 
-- (void)applicationDidEnterBackground:(NSNotificationCenter *)notification
-{
-    MixpanelDebug(@"%@ did enter background", self);
 
-    @synchronized(self) {
-        if (self.flushOnBackground) {
-            [self flushInBackgroundTask];
-        }
-    }
-}
-
-- (void)applicationWillEnterForeground:(NSNotificationCenter *)notification
-{
-    MixpanelDebug(@"%@ will enter foreground", self);
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= 40000
-    @synchronized(self) {
-
-        if (&UIBackgroundTaskInvalid) {
-            if (self.taskId != UIBackgroundTaskInvalid) {
-                [[UIApplication sharedApplication] endBackgroundTask:self.taskId];
-            }
-            self.taskId = UIBackgroundTaskInvalid;
-        }
-        [self cancelFlush];
-        [self updateNetworkActivityIndicator];
-    }
-#endif
-}
 
 - (void)applicationWillTerminate:(NSNotification *)notification
 {
     MixpanelDebug(@"%@ application will terminate", self);
-    @synchronized(self) {
-        [self archive];
-    }
-}
-
-- (void)endBackgroundTaskIfComplete
-{
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= 40000
-    // if the os version allows background tasks, the app supports them, and we're in one, end it
-    @synchronized(self) {
-
-        if (&UIBackgroundTaskInvalid && [[UIApplication sharedApplication] respondsToSelector:@selector(endBackgroundTask:)] &&
-            self.taskId != UIBackgroundTaskInvalid && self.eventsConnection == nil && self.peopleConnection == nil) {
-            MixpanelDebug(@"%@ ending flush background task %u", self, self.taskId);
-            [[UIApplication sharedApplication] endBackgroundTask:self.taskId];
-            self.taskId = UIBackgroundTaskInvalid;
-        }
-    }
-#endif
-}
-
-#pragma mark * NSURLConnection callbacks
-
-- (NSURLConnection *)apiConnectionWithEndpoint:(NSString *)endpoint andBody:(NSString *)body
-{
-    NSURL *url = [NSURL URLWithString:[self.serverURL stringByAppendingString:endpoint]];
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-    [request setValue:@"gzip" forHTTPHeaderField:@"Accept-Encoding"];
-    [request setHTTPMethod:@"POST"];
-    [request setHTTPBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
-    MixpanelDebug(@"%@ http request: %@?%@", self, [self.serverURL stringByAppendingString:endpoint], body);
-    return [NSURLConnection connectionWithRequest:request delegate:self];
-}
-
-- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSHTTPURLResponse *)response
-{
-    MixpanelDebug(@"%@ http status code: %d", self, [response statusCode]);
-    if ([response statusCode] != 200) {
-        NSLog(@"%@ http error: %@", self, [NSHTTPURLResponse localizedStringForStatusCode:[response statusCode]]);
-    } else if (connection == self.eventsConnection) {
-        self.eventsResponseData = [NSMutableData data];
-    } else if (connection == self.peopleConnection) {
-        self.peopleResponseData = [NSMutableData data];
-    }
-}
-
-- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data
-{
-    if (connection == self.eventsConnection) {
-        [self.eventsResponseData appendData:data];
-    } else if (connection == self.peopleConnection) {
-        [self.peopleResponseData appendData:data];
-    }
-}
-
-- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error
-{
-    @synchronized(self) {
-        NSLog(@"%@ network failure: %@", self, error);
-        if (connection == self.eventsConnection) {
-            self.eventsBatch = nil;
-            self.eventsResponseData = nil;
-            self.eventsConnection = nil;
-            [self archiveEvents];
-        } else if (connection == self.peopleConnection) {
-            self.peopleBatch = nil;
-            self.peopleResponseData = nil;
-            self.peopleConnection = nil;
-            [self archivePeople];
-        }
-
-        [self updateNetworkActivityIndicator];
-        
-        [self endBackgroundTaskIfComplete];
-    }
-}
-
-- (void)connectionDidFinishLoading:(NSURLConnection *)connection
-{
-    @synchronized(self) {
-        MixpanelDebug(@"%@ http response finished loading", self);
-        if (connection == self.eventsConnection) {
-            NSString *response = [[NSString alloc] initWithData:self.eventsResponseData encoding:NSUTF8StringEncoding];
-            if ([response intValue] == 0) {
-                NSLog(@"%@ track api error: %@", self, response);
-            }
-            [response release];
-
-            [self.eventsQueue removeObjectsInArray:self.eventsBatch];
-            [self archiveEvents];
-
-            self.eventsBatch = nil;
-            self.eventsResponseData = nil;
-            self.eventsConnection = nil;
-
-        } else if (connection == self.peopleConnection) {
-            NSString *response = [[NSString alloc] initWithData:self.peopleResponseData encoding:NSUTF8StringEncoding];
-            if ([response intValue] == 0) {
-                NSLog(@"%@ engage api error: %@", self, response);
-            }
-            [response release];
-
-            [self.peopleQueue removeObjectsInArray:self.peopleBatch];
-            [self archivePeople];
-
-            self.peopleBatch = nil;
-            self.peopleResponseData = nil;
-            self.peopleConnection = nil;
-        }
-        
-        [self updateNetworkActivityIndicator];
-        
-        [self endBackgroundTaskIfComplete];
-    }
-}
-
-#pragma mark * NSObject
-
-- (NSString *)description
-{
-    return [NSString stringWithFormat:@"<Mixpanel: %p %@>", self, self.apiToken];
-}
-
-- (void)dealloc
-{
-    [self stopFlushTimer];
-    [self removeApplicationObservers];
-    
-    self.people = nil;
-    self.distinctId = nil;
-    self.nameTag = nil;
-    self.serverURL = nil;
-    self.delegate = nil;
-    
-    self.apiToken = nil;
-    self.superProperties = nil;
-    self.timer = nil;
-    self.eventsQueue = nil;
-    self.peopleQueue = nil;
-    self.eventsBatch = nil;
-    self.peopleBatch = nil;
-    self.eventsConnection = nil;
-    self.peopleConnection = nil;
-    self.eventsResponseData = nil;
-    self.peopleResponseData = nil;
-    
-    [super dealloc];
+    dispatch_async(_serialQueue, ^{
+       [self archive];
+    });
 }
 
 @end
 
-#pragma mark * People
-
 @implementation MixpanelPeople
-
-+ (NSDictionary *)deviceInfoProperties
-{
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-
-    UIDevice *device = [UIDevice currentDevice];
-    NSMutableDictionary *properties = [NSMutableDictionary dictionary];
-    [properties setValue:[Mixpanel deviceModel] forKey:@"$ios_device_model"];
-    [properties setValue:[device systemVersion] forKey:@"$ios_version"];
-    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"] forKey:@"$ios_app_version"];
-    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] forKey:@"$ios_app_release"];
-    if (NSClassFromString(@"ASIdentifierManager")) {
-        [properties setValue:ASIdentifierManager.sharedManager.advertisingIdentifier.UUIDString forKey:@"$ios_ifa"];
-    }
-#else
-    NSMutableDictionary *properties = [NSMutableDictionary dictionary];
-    [properties setValue:[Mixpanel deviceModel] forKey:@"$ios_device_model"];
-    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"] forKey:@"$ios_app_version"];
-    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] forKey:@"$ios_app_release"];
-#endif
-    return [NSDictionary dictionaryWithDictionary:properties];
-}
 
 - (id)initWithMixpanel:(Mixpanel *)mixpanel
 {
     if (self = [self init]) {
         self.mixpanel = mixpanel;
         self.unidentifiedQueue = [NSMutableArray array];
+        self.automaticPeopleProperties = [self collectAutomaticPeopleProperties];
     }
     return self;
+}
+
+- (NSString *)description
+{
+    __strong Mixpanel *strongMixpanel = _mixpanel;
+    return [NSString stringWithFormat:@"<MixpanelPeople: %p %@>", self, (strongMixpanel ? strongMixpanel.apiToken : @"")];
+}
+
+- (NSDictionary *)collectAutomaticPeopleProperties
+{
+    NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+    NSMutableDictionary *properties = [NSMutableDictionary dictionary];
+    [properties setValue:[processInfo operatingSystemVersionString] forKey:@"$mac_version"];
+    [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"] forKey:@"$mac_app_version"];
+    __strong Mixpanel *strongMixpanel = _mixpanel;
+    if (strongMixpanel) {
+        [properties setValue:[strongMixpanel deviceModel] forKey:@"$mac_device_model"];
+    }
+    return [NSDictionary dictionaryWithDictionary:properties];
+}
+
+- (void)addPeopleRecordToQueueWithAction:(NSString *)action andProperties:(NSDictionary *)properties
+{
+    properties = [properties copy];
+    NSNumber *epochMilliseconds = @(round([[NSDate date] timeIntervalSince1970] * 1000));
+    __strong Mixpanel *strongMixpanel = _mixpanel;
+    if (strongMixpanel) {
+        dispatch_async(strongMixpanel.serialQueue, ^{
+            NSMutableDictionary *r = [NSMutableDictionary dictionary];
+            NSMutableDictionary *p = [NSMutableDictionary dictionary];
+            [r setObject:strongMixpanel.apiToken forKey:@"$token"];
+            if (![r objectForKey:@"$time"]) {
+                // milliseconds unix timestamp
+                [r setObject:epochMilliseconds forKey:@"$time"];
+            }
+            if ([action isEqualToString:@"$set"] || [action isEqualToString:@"$set_once"]) {
+                [p addEntriesFromDictionary:self.automaticPeopleProperties];
+            }
+            [p addEntriesFromDictionary:properties];
+            [r setObject:[NSDictionary dictionaryWithDictionary:p] forKey:action];
+            if (self.distinctId) {
+                [r setObject:self.distinctId forKey:@"$distinct_id"];
+                MixpanelLog(@"%@ queueing people record: %@", self.mixpanel, r);
+                [strongMixpanel.peopleQueue addObject:r];
+                if ([strongMixpanel.peopleQueue count] > 500) {
+                    [strongMixpanel.peopleQueue removeObjectAtIndex:0];
+                }
+            } else {
+                MixpanelLog(@"%@ queueing unidentified people record: %@", self.mixpanel, r);
+                [self.unidentifiedQueue addObject:r];
+                if ([self.unidentifiedQueue count] > 500) {
+                    [self.unidentifiedQueue removeObjectAtIndex:0];
+                }
+            }
+            if ([Mixpanel inBackground]) {
+                [strongMixpanel archivePeople];
+            }
+        });
+    }
 }
 
 - (void)addPushDeviceToken:(NSData *)deviceToken
@@ -1141,8 +999,8 @@ static Mixpanel *sharedInstance = nil;
     for (NSUInteger i = 0; i < deviceToken.length; i++) {
         [hex appendString:[NSString stringWithFormat:@"%02lx", (unsigned long)buffer[i]]];
     }
-    NSArray *tokens = [NSArray arrayWithObject:[NSString stringWithString:hex]];
-    NSDictionary *properties = [NSDictionary dictionaryWithObject:tokens forKey:@"$ios_devices"];
+    NSArray *tokens = @[[NSString stringWithString:hex]];
+    NSDictionary *properties = @{@"$ios_devices": tokens};
     [self addPeopleRecordToQueueWithAction:@"$union" andProperties:properties];
 }
 
@@ -1160,7 +1018,7 @@ static Mixpanel *sharedInstance = nil;
     if (property == nil || object == nil) {
         return;
     }
-    [self set:[NSDictionary dictionaryWithObject:object forKey:property]];
+    [self set:@{property: object}];
 }
 
 - (void)setOnce:(NSDictionary *)properties
@@ -1173,7 +1031,7 @@ static Mixpanel *sharedInstance = nil;
 - (void)increment:(NSDictionary *)properties
 {
     NSAssert(properties != nil, @"properties must not be nil");
-    for (id v in [properties allValues]) {
+    for (id __unused v in [properties allValues]) {
         NSAssert([v isKindOfClass:[NSNumber class]],
                  @"%@ increment property values should be NSNumber. found: %@", self, v);
     }
@@ -1187,7 +1045,7 @@ static Mixpanel *sharedInstance = nil;
     if (property == nil || amount == nil) {
         return;
     }
-    [self increment:[NSDictionary dictionaryWithObject:amount forKey:property]];
+    [self increment:@{property: amount}];
 }
 
 - (void)append:(NSDictionary *)properties
@@ -1195,6 +1053,16 @@ static Mixpanel *sharedInstance = nil;
     NSAssert(properties != nil, @"properties must not be nil");
     [Mixpanel assertPropertyTypes:properties];
     [self addPeopleRecordToQueueWithAction:@"$append" andProperties:properties];
+}
+
+- (void)union:(NSDictionary *)properties
+{
+    NSAssert(properties != nil, @"properties must not be nil");
+    for (id __unused v in [properties allValues]) {
+        NSAssert([v isKindOfClass:[NSArray class]],
+                 @"%@ union property values should be NSArray. found: %@", self, v);
+    }
+    [self addPeopleRecordToQueueWithAction:@"$union" andProperties:properties];
 }
 
 - (void)trackCharge:(NSNumber *)amount
@@ -1210,68 +1078,18 @@ static Mixpanel *sharedInstance = nil;
         if (properties) {
             [txn addEntriesFromDictionary:properties];
         }
-        [self append:[NSDictionary dictionaryWithObject:txn forKey:@"$transactions"]];
+        [self append:@{@"$transactions": txn}];
     }
 }
 
 - (void)clearCharges
 {
-    [self set:[NSDictionary dictionaryWithObject:[NSArray array] forKey:@"$transactions"]];
+    [self set:@{@"$transactions": @[]}];
 }
 
 - (void)deleteUser
 {
-    [self addPeopleRecordToQueueWithAction:@"$delete" andProperties:[NSDictionary dictionary]];
-}
-
-- (void)addPeopleRecordToQueueWithAction:(NSString *)action andProperties:(NSDictionary *)properties
-{
-    @synchronized(self) {
-
-        NSMutableDictionary *r = [NSMutableDictionary dictionary];
-        NSMutableDictionary *p = [NSMutableDictionary dictionary];
-
-        [r setObject:self.mixpanel.apiToken forKey:@"$token"];
-
-        if (![r objectForKey:@"$time"]) {
-            // milliseconds unix timestamp
-            NSNumber *time = [NSNumber numberWithUnsignedLongLong:(uint64_t)([[NSDate date] timeIntervalSince1970] * 1000)];
-            [r setObject:time forKey:@"$time"];
-        }
-
-        if ([action isEqualToString:@"$set"] || [action isEqualToString:@"$set_once"]) {
-            [p addEntriesFromDictionary:[MixpanelPeople deviceInfoProperties]];
-        }
-
-        [p addEntriesFromDictionary:properties];
-
-        [r setObject:[NSDictionary dictionaryWithDictionary:p] forKey:action];
-
-        if (self.distinctId) {
-            [r setObject:self.distinctId forKey:@"$distinct_id"];
-            MixpanelLog(@"%@ queueing people record: %@", self.mixpanel, r);
-            [self.mixpanel.peopleQueue addObject:r];
-        } else {
-            MixpanelLog(@"%@ queueing unidentified people record: %@", self.mixpanel, r);
-            [self.unidentifiedQueue addObject:r];
-        }
-        if ([Mixpanel inBackground]) {
-            [self.mixpanel archivePeople];
-        }
-    }
-}
-
-- (NSString *)description
-{
-    return [NSString stringWithFormat:@"<MixpanelPeople: %p %@>", self, self.mixpanel.apiToken];
-}
-
-- (void)dealloc
-{
-    self.mixpanel = nil;
-    self.distinctId = nil;
-    self.unidentifiedQueue = nil;
-    [super dealloc];
+    [self addPeopleRecordToQueueWithAction:@"$delete" andProperties:@{}];
 }
 
 @end
