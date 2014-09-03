@@ -36,7 +36,6 @@
 {
     self.genderControl = nil;
     self.weaponControl = nil;
-    [super dealloc];
 }
 
 - (void)viewDidLoad
