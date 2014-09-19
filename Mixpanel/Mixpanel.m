@@ -11,6 +11,11 @@
 
 #import <CommonCrypto/CommonHMAC.h>
 #import <CommonCrypto/CommonDigest.h>
+#if TARGET_OS_IPHONE
+#import <CoreTelephony/CTCarrier.h>
+#import <CoreTelephony/CTTelephonyNetworkInfo.h>
+#import <SystemConfiguration/SystemConfiguration.h>
+#endif
 #import <SystemConfiguration/SystemConfiguration.h>
 
 #import "Mixpanel.h"
@@ -50,6 +55,9 @@
 @property (nonatomic, strong) NSMutableArray *peopleQueue;
 @property dispatch_queue_t serialQueue;
 @property (nonatomic, assign) SCNetworkReachabilityRef reachability;
+#if TARGET_OS_IPHONE
+@property (nonatomic, strong) CTTelephonyNetworkInfo *telephonyInfo;
+#endif
 @property (nonatomic, strong) NSDateFormatter *dateFormatter;
 
 
@@ -163,7 +171,8 @@ static Mixpanel *sharedInstance = nil;
                                      object:nil];
         }
 #endif
-
+        
+#ifndef TARGET_OS_IPHONE
         [notificationCenter addObserver:self
                                selector:@selector(applicationWillTerminate:)
                                    name:NSApplicationWillTerminateNotification
@@ -176,6 +185,7 @@ static Mixpanel *sharedInstance = nil;
                                selector:@selector(applicationDidBecomeActive:)
                                    name:NSApplicationDidBecomeActiveNotification
                                  object:nil];
+#endif // !TARGET_OS_IPHONE
         [self unarchive];
     }
 
@@ -218,6 +228,21 @@ static Mixpanel *sharedInstance = nil;
 
 }
 
+- (NSString *)IFA
+{
+    NSString *ifa = nil;
+#ifndef MIXPANEL_NO_IFA
+    Class ASIdentifierManagerClass = NSClassFromString(@"ASIdentifierManager");
+    if (ASIdentifierManagerClass) {
+        SEL sharedManagerSelector = NSSelectorFromString(@"sharedManager");
+        id sharedManager = ((id (*)(id, SEL))[ASIdentifierManagerClass methodForSelector:sharedManagerSelector])(ASIdentifierManagerClass, sharedManagerSelector);
+        SEL advertisingIdentifierSelector = NSSelectorFromString(@"advertisingIdentifier");
+        NSUUID *uuid = ((NSUUID* (*)(id, SEL))[sharedManager methodForSelector:advertisingIdentifierSelector])(sharedManager, advertisingIdentifierSelector);
+        ifa = [uuid UUIDString];
+    }
+#endif
+    return ifa;
+}
 
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 70000
 - (void)setCurrentRadio
@@ -244,6 +269,28 @@ static Mixpanel *sharedInstance = nil;
 - (NSDictionary *)collectAutomaticProperties
 {
     NSMutableDictionary *properties = [NSMutableDictionary dictionary];
+    
+#if TARGET_OS_IPHONE
+    UIDevice *device = [UIDevice currentDevice];
+    NSString *deviceModel = [self deviceModel];
+    CGSize size = [UIScreen mainScreen].bounds.size;
+    CTTelephonyNetworkInfo *networkInfo = [[CTTelephonyNetworkInfo alloc] init];
+    CTCarrier *carrier = [networkInfo subscriberCellularProvider];
+    
+    [properties setValue:@"iphone" forKey:@"mp_lib"];
+    [properties setValue:VERSION forKey:@"$lib_version"];
+    [properties setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleVersion"] forKey:@"$app_version"];
+    [properties setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] forKey:@"$app_release"];
+    [properties setValue:@"Apple" forKey:@"$manufacturer"];
+    [properties setValue:[device systemName] forKey:@"$os"];
+    [properties setValue:[device systemVersion] forKey:@"$os_version"];
+    [properties setValue:deviceModel forKey:@"$model"];
+    [properties setValue:deviceModel forKey:@"mp_device_model"]; // legacy
+    [properties setValue:@((NSInteger)size.height) forKey:@"$screen_height"];
+    [properties setValue:@((NSInteger)size.width) forKey:@"$screen_width"];
+    [properties setValue:[self IFA] forKey:@"$ios_ifa"];
+    [properties setValue:carrier.carrierName forKey:@"$carrier"];
+#else
     NSProcessInfo *processInfo = [NSProcessInfo processInfo];
     
     [properties setValue:@"mac" forKey:@"mp_lib"];
@@ -261,16 +308,21 @@ static Mixpanel *sharedInstance = nil;
     NSSize size = [NSScreen mainScreen].frame.size;
     [properties setValue:[NSNumber numberWithInt:(int)size.height] forKey:@"$screen_height"];
     [properties setValue:[NSNumber numberWithInt:(int)size.width] forKey:@"$screen_width"];
-    
+#endif
+
     return [properties copy];
 }
 
 + (BOOL)inBackground
 {
+#if TARGET_OS_IPHONE
+    return [UIApplication sharedApplication].applicationState == UIApplicationStateBackground;
+#else
     BOOL inBg = NO;
     inBg = ![[NSRunningApplication currentApplication] isActive];
 
     return inBg;
+#endif
 }
 
 + (NSDictionary *)interfaces
