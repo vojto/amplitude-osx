@@ -172,7 +172,7 @@ static Mixpanel *sharedInstance = nil;
         }
 #endif
         
-#ifndef TARGET_OS_IPHONE
+#if TARGET_OS_MAC
         [notificationCenter addObserver:self
                                selector:@selector(applicationWillTerminate:)
                                    name:NSApplicationWillTerminateNotification
