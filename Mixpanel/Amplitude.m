@@ -19,7 +19,6 @@
 #import <SystemConfiguration/SystemConfiguration.h>
 
 #import "Amplitude.h"
-#import "NSData+MPBase64.h"
 
 #ifndef IFT_ETHER
 #define IFT_ETHER 0x6 // ethernet CSMACD
@@ -716,7 +715,7 @@ static Amplitude *sharedInstance = nil;
     dispatch_async(_serialQueue, ^{
         MixpanelDebug(@"%@ flush starting", self);
 
-        __strong id<MixpanelDelegate> strongDelegate = _delegate;
+        __strong id<AmplitudeDelegate> strongDelegate = _delegate;
         if (strongDelegate != nil && [strongDelegate respondsToSelector:@selector(mixpanelWillFlush:)] && ![strongDelegate mixpanelWillFlush:self]) {
             MixpanelDebug(@"%@ flush deferred by delegate", self);
             return;

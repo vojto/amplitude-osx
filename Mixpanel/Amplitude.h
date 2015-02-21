@@ -7,7 +7,7 @@
 #endif
 
 @class    AmplitudePeople;
-@protocol MixpanelDelegate;
+@protocol AmplitudeDelegate;
 
 /*!
  @class
@@ -132,7 +132,7 @@
  Using a delegate is optional. See the documentation for MixpanelDelegate
  below for more information.
  */
-@property (atomic, weak) id<MixpanelDelegate> delegate; // allows fine grain control over uploading (optional)
+@property (atomic, weak) id<AmplitudeDelegate> delegate; // allows fine grain control over uploading (optional)
 
 /*!
  @method
@@ -616,7 +616,7 @@
  beyond simply calling stop: and start: before and after a particular block of
  your code.
  */
-@protocol MixpanelDelegate <NSObject>
+@protocol AmplitudeDelegate <NSObject>
 @optional
 
 /*!
