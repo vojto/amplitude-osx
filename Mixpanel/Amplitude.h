@@ -6,7 +6,7 @@
 #import <Cocoa/Cocoa.h>
 #endif
 
-@class    MixpanelPeople;
+@class    AmplitudePeople;
 @protocol MixpanelDelegate;
 
 /*!
@@ -37,7 +37,7 @@
  href="https://mixpanel.com/docs/integration-libraries/iphone">Mixpanel iPhone
  Library Guide</a>.
  */
-@interface Mixpanel : NSObject
+@interface Amplitude : NSObject
 
 /*!
  @property
@@ -48,7 +48,7 @@
  @discussion
  See the documentation for MixpanelDelegate below for more information.
  */
-@property (atomic, readonly, strong) MixpanelPeople *people;
+@property (atomic, readonly, strong) AmplitudePeople *people;
 
 /*!
  @property
@@ -158,7 +158,7 @@
 
  @param apiToken        your project token
  */
-+ (Mixpanel *)sharedInstanceWithToken:(NSString *)apiToken;
++ (Amplitude *)sharedInstanceWithToken:(NSString *)apiToken;
 
 /*!
  @method
@@ -170,7 +170,7 @@
  The API must be initialized with <code>sharedInstanceWithToken:</code> before
  calling this class method.
  */
-+ (Mixpanel *)sharedInstance;
++ (Amplitude *)sharedInstance;
 
 /*!
  @method
@@ -421,7 +421,7 @@
  tracking, make sure to use the same distinct IDs when using Mixpanel
  People</b>.
  */
-@interface MixpanelPeople : NSObject
+@interface AmplitudePeople : NSObject
 
 /*!
  @method
@@ -630,6 +630,6 @@
 
  @param mixpanel        Mixpanel API instance
  */
-- (BOOL)mixpanelWillFlush:(Mixpanel *)mixpanel;
+- (BOOL)mixpanelWillFlush:(Amplitude *)mixpanel;
 
 @end
