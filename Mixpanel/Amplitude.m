@@ -11,11 +11,6 @@
 
 #import <CommonCrypto/CommonHMAC.h>
 #import <CommonCrypto/CommonDigest.h>
-#if TARGET_OS_IPHONE
-#import <CoreTelephony/CTCarrier.h>
-#import <CoreTelephony/CTTelephonyNetworkInfo.h>
-#import <SystemConfiguration/SystemConfiguration.h>
-#endif
 #import <SystemConfiguration/SystemConfiguration.h>
 
 #import "Amplitude.h"
@@ -54,9 +49,6 @@
 @property (nonatomic, strong) NSMutableArray *peopleQueue;
 @property dispatch_queue_t serialQueue;
 @property (nonatomic, assign) SCNetworkReachabilityRef reachability;
-#if TARGET_OS_IPHONE
-@property (nonatomic, strong) CTTelephonyNetworkInfo *telephonyInfo;
-#endif
 @property (nonatomic, strong) NSDateFormatter *dateFormatter;
 
 
@@ -161,30 +153,7 @@ static Amplitude *sharedInstance = nil;
         NSNotificationCenter *notificationCenter = [NSNotificationCenter defaultCenter];
 
         // cellular info
-#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 70000
-        if (floor(NSFoundationVersionNumber) > NSFoundationVersionNumber_iOS_6_1) {
-            [self setCurrentRadio];
-            [notificationCenter addObserver:self
-                                   selector:@selector(setCurrentRadio)
-                                       name:CTRadioAccessTechnologyDidChangeNotification
-                                     object:nil];
-        }
-#endif
-        
-#ifndef TARGET_OS_IPHONE
-        [notificationCenter addObserver:self
-                               selector:@selector(applicationWillTerminate:)
-                                   name:NSApplicationWillTerminateNotification
-                                 object:nil];
-        [notificationCenter addObserver:self
-                               selector:@selector(applicationWillResignActive:)
-                                   name:NSApplicationWillResignActiveNotification
-                                 object:nil];
-        [notificationCenter addObserver:self
-                               selector:@selector(applicationDidBecomeActive:)
-                                   name:NSApplicationDidBecomeActiveNotification
-                                 object:nil];
-#endif // !TARGET_OS_IPHONE
+
         [self unarchive];
     }
 
@@ -243,86 +212,30 @@ static Amplitude *sharedInstance = nil;
     return ifa;
 }
 
-#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 70000
-- (void)setCurrentRadio
-{
-    dispatch_async(self.serialQueue, ^(){
-        NSMutableDictionary *properties = [self.automaticProperties mutableCopy];
-        properties[@"$radio"] = [self currentRadio];
-        self.automaticProperties = [properties copy];
-    });
-}
-
-- (NSString *)currentRadio
-{
-    NSString *radio = _telephonyInfo.currentRadioAccessTechnology;
-    if (!radio) {
-        radio = @"None";
-    } else if ([radio hasPrefix:@"CTRadioAccessTechnology"]) {
-        radio = [radio substringFromIndex:23];
-    }
-    return radio;
-}
-#endif
-
 - (NSDictionary *)collectAutomaticProperties
 {
     NSMutableDictionary *properties = [NSMutableDictionary dictionary];
-    
-#if TARGET_OS_IPHONE
-    UIDevice *device = [UIDevice currentDevice];
-    NSString *deviceModel = [self deviceModel];
-    CGSize size = [UIScreen mainScreen].bounds.size;
-    CTTelephonyNetworkInfo *networkInfo = [[CTTelephonyNetworkInfo alloc] init];
-    CTCarrier *carrier = [networkInfo subscriberCellularProvider];
-    
-    [properties setValue:@"iphone" forKey:@"mp_lib"];
-    [properties setValue:VERSION forKey:@"$lib_version"];
-    [properties setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleVersion"] forKey:@"$app_version"];
-    [properties setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] forKey:@"$app_release"];
-    [properties setValue:@"Apple" forKey:@"$manufacturer"];
-    [properties setValue:[device systemName] forKey:@"$os"];
-    [properties setValue:[device systemVersion] forKey:@"$os_version"];
-    [properties setValue:deviceModel forKey:@"$model"];
-    [properties setValue:deviceModel forKey:@"mp_device_model"]; // legacy
-    [properties setValue:@((NSInteger)size.height) forKey:@"$screen_height"];
-    [properties setValue:@((NSInteger)size.width) forKey:@"$screen_width"];
-    [properties setValue:[self IFA] forKey:@"$ios_ifa"];
-    [properties setValue:carrier.carrierName forKey:@"$carrier"];
-#else
+
     NSProcessInfo *processInfo = [NSProcessInfo processInfo];
     
-//    [properties setValue:@"mac" forKey:@"mp_lib"];
-//    [properties setValue:VERSION forKey:@"$lib_version"];
-//    
     [properties setValue:[[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"] forKey:@"app_version"];
-//
+
     [properties setValue:@"Apple" forKey:@"device_brand"];
     [properties setValue:@"Apple" forKey:@"device_manufacturer"];
     [properties setValue:@"Mac OS X" forKey:@"os_name"];
     [properties setValue:[processInfo operatingSystemVersionString] forKey:@"os_version"];
-//
+
     [properties setValue:[self deviceModel] forKey:@"device_model"];
-//    [properties setValue:[self deviceModel] forKey:@"mp_device_model"]; // legacy
-//    
-//    NSSize size = [NSScreen mainScreen].frame.size;
-//    [properties setValue:[NSNumber numberWithInt:(int)size.height] forKey:@"$screen_height"];
-//    [properties setValue:[NSNumber numberWithInt:(int)size.width] forKey:@"$screen_width"];
-#endif
 
     return [properties copy];
 }
 
 + (BOOL)inBackground
 {
-#if TARGET_OS_IPHONE
-    return [UIApplication sharedApplication].applicationState == UIApplicationStateBackground;
-#else
     BOOL inBg = NO;
     inBg = ![[NSRunningApplication currentApplication] isActive];
 
     return inBg;
-#endif
 }
 
 + (NSDictionary *)interfaces
@@ -939,36 +852,6 @@ static Amplitude *sharedInstance = nil;
         self.people.distinctId = [properties objectForKey:@"peopleDistinctId"];
         self.people.unidentifiedQueue = [properties objectForKey:@"peopleUnidentifiedQueue"] ? [properties objectForKey:@"peopleUnidentifiedQueue"] : [NSMutableArray array];
     }
-}
-
-#pragma mark - UIApplication notifications
-
-- (void)applicationDidBecomeActive:(NSNotification *)notification
-{
-    NSLog(@"application became active");
-    MixpanelDebug(@"%@ application did become active", self);
-    [self startFlushTimer];
-
-}
-
-- (void)applicationWillResignActive:(NSNotification *)notification
-{
-    MixpanelDebug(@"%@ application will resign active", self);
-    [self stopFlushTimer];
-    
-    if (self.flushOnBackground){
-        [self flush];
-    }
-}
-
-
-
-- (void)applicationWillTerminate:(NSNotification *)notification
-{
-    MixpanelDebug(@"%@ application will terminate", self);
-    dispatch_async(_serialQueue, ^{
-       [self archive];
-    });
 }
 
 @end
